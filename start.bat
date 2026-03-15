@@ -1,7 +1,7 @@
 @echo off
 echo Starting MarketLens...
 
-start "MarketLens Backend" cmd /k "cd /d C:\Users\Jeremy\ChartProject\stock-dashboard-backend && uvicorn main:app --reload"
+start "MarketLens Backend" cmd /k "cd /d C:\Users\Jeremy\ChartProject\stock-dashboard-backend && uvicorn main:app --host 0.0.0.0 --reload"
 timeout /t 5 /nobreak >nul
 start "MarketLens Frontend" cmd /k "cd /d C:\Users\Jeremy\ChartProject\stock-dashboard-frontend && npm run dev"
 
