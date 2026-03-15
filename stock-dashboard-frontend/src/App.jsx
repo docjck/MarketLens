@@ -263,9 +263,53 @@ function CandlestickSeries({ data, xAxisMap, yAxisMap }) {
   );
 }
 
+// ─── Dividend Markers ─────────────────────────────────────────────────────────
+
+function DividendMarkers({ dividends, data, xAxisMap, yAxisMap }) {
+  if (!dividends?.length || !data?.length || !xAxisMap || !yAxisMap) return null;
+
+  const xAxis = Object.values(xAxisMap)[0];
+  const yAxis = Object.values(yAxisMap)[0];
+  if (!xAxis?.scale || !yAxis) return null;
+
+  const xScale    = xAxis.scale;
+  const bandwidth = xScale.bandwidth ? xScale.bandwidth() : 0;
+  const chartBottom = yAxis.y + yAxis.height;
+
+  const markers = [];
+  for (const div of dividends) {
+    const divTime = new Date(div.date).getTime();
+    let bestIdx = -1, bestDiff = Infinity;
+    for (let i = 0; i < data.length; i++) {
+      const diff = Math.abs(new Date(data[i].date).getTime() - divTime);
+      if (diff < bestDiff) { bestDiff = diff; bestIdx = i; }
+    }
+    // Skip if no chart data point within 21 days (weekends, holidays, out of range)
+    if (bestIdx < 0 || bestDiff > 21 * 24 * 60 * 60 * 1000) continue;
+    const x = xScale(data[bestIdx].date);
+    if (x == null || isNaN(x)) continue;
+    markers.push({ x: x + bandwidth / 2, amount: div.amount });
+  }
+
+  return (
+    <g>
+      {markers.map((m, i) => (
+        <g key={i}>
+          <line x1={m.x} y1={chartBottom - 14} x2={m.x} y2={chartBottom - 2}
+            stroke="#f59e0b" strokeWidth={1.5} />
+          <text x={m.x} y={chartBottom - 17} textAnchor="middle"
+            fill="#f59e0b" fontSize={7} fontFamily="'IBM Plex Mono', monospace">
+            ${m.amount.toFixed(2)}
+          </text>
+        </g>
+      ))}
+    </g>
+  );
+}
+
 // ─── Chart Panel ─────────────────────────────────────────────────────────────
 
-function ChartPanel({ data, timeframe, ticker, loading, error, chartType, drawMode, drawTool, drawColor, lines, onAddLine }) {
+function ChartPanel({ data, timeframe, ticker, loading, error, chartType, drawMode, drawTool, drawColor, lines, onAddLine, dividends }) {
   const svgRef = useRef(null);
   const [drawing, setDrawing] = useState(null);
   const [channelPhase, setChannelPhase] = useState(0); // 0=idle, 1=base drawn waiting for offset click
@@ -381,6 +425,9 @@ function ChartPanel({ data, timeframe, ticker, loading, error, chartType, drawMo
               <Area type="monotone" dataKey="close" stroke="#00ff88" strokeWidth={2}
                 fill="url(#areaGrad)" dot={false}
                 activeDot={{ r: 4, fill: "#00ff88", stroke: "#000" }} />
+            )}
+            {dividends?.length > 0 && timeframe !== "1d" && (
+              <Customized component={<DividendMarkers dividends={dividends} data={normalized} />} />
             )}
           </ComposedChart>
       </ResponsiveContainer>
@@ -1141,7 +1188,7 @@ export default function App() {
               </div>
             )}
 
-            <ChartPanel data={currentData} timeframe={timeframe} ticker={ticker} loading={loadingChart} error={chartError} chartType={chartType} drawMode={drawMode} drawTool={drawTool} drawColor={drawColor} lines={currentLines} onAddLine={handleAddLine} />
+            <ChartPanel data={currentData} timeframe={timeframe} ticker={ticker} loading={loadingChart} error={chartError} chartType={chartType} drawMode={drawMode} drawTool={drawTool} drawColor={drawColor} lines={currentLines} onAddLine={handleAddLine} dividends={fundamentals?.dividend_history} />
 
             {chartError && (
               <div style={{ padding: "0 8px 8px" }}>
