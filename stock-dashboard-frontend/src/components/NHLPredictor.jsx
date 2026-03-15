@@ -528,11 +528,22 @@ export default function NHLPredictor() {
                   </div>
                 </div>
                 <div>
-                  <div style={{ fontSize: 10, color: "#334155", letterSpacing: 2, marginBottom: 4 }}>ODDS SOURCE</div>
+                  <div style={{ fontSize: 10, color: "#334155", letterSpacing: 2, marginBottom: 4 }}>ML ODDS</div>
                   <div style={{ fontSize: 13, color: data.odds_available ? "#00ff88" : "#475569", marginTop: 4 }}>
-                    {data.odds_available ? "LIVE (The Odds API)" : "MODEL ONLY — add ODDS_API_KEY"}
+                    {data.odds_available ? "LIVE" : "NO KEY"}
                   </div>
                 </div>
+                <div>
+                  <div style={{ fontSize: 10, color: "#334155", letterSpacing: 2, marginBottom: 4 }}>O/U ODDS</div>
+                  <div style={{ fontSize: 13, color: data.ou_available ? "#00ff88" : "#ef4444", marginTop: 4 }}>
+                    {data.ou_available ? "LIVE" : "NOT RECEIVED"}
+                  </div>
+                </div>
+                {data.odds_error && (
+                  <div style={{ flex: "1 1 100%", fontSize: 10, color: "#ef4444", fontFamily: "'IBM Plex Mono', monospace", marginTop: 4 }}>
+                    ⚠ {data.odds_error}
+                  </div>
+                )}
                 <div>
                   <div style={{ fontSize: 10, color: "#334155", letterSpacing: 2, marginBottom: 4 }}>EDGE THRESHOLD</div>
                   <div style={{ fontSize: 13, color: "#475569", marginTop: 4 }}>≥5% flag &nbsp;·&nbsp; ≥10% strong</div>

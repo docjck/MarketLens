@@ -163,17 +163,15 @@ async def get_predictions():
         # 3. Odds (optional — only if ODDS_API_KEY is set)
         odds_lookup = {}   # key -> {"home_ml", "away_ml", "home_team", "away_team"}
         ou_lookup   = {}   # key -> {"line", "over_ml", "under_ml"}
+        odds_error  = None
         if ODDS_API_KEY:
             try:
-                resp = await client.get(
-                    f"{ODDS_BASE}/sports/icehockey_nhl/odds/",
-                    params={
-                        "apiKey": ODDS_API_KEY,
-                        "regions": "us",
-                        "markets": "h2h,totals",
-                        "oddsFormat": "american",
-                    },
+                # Build URL manually to avoid httpx percent-encoding the comma in markets
+                odds_url = (
+                    f"{ODDS_BASE}/sports/icehockey_nhl/odds/"
+                    f"?apiKey={ODDS_API_KEY}&regions=us&markets=h2h,totals&oddsFormat=american"
                 )
+                resp = await client.get(odds_url)
                 if resp.status_code == 200:
                     for event in resp.json():
                         e_home = event.get("home_team", "")
@@ -201,8 +199,10 @@ async def get_predictions():
                                             "over_ml":   over.get("price"),
                                             "under_ml":  under.get("price"),
                                         }
-            except Exception:
-                pass  # odds are optional — don't fail the whole response
+                else:
+                    odds_error = f"Odds API {resp.status_code}: {resp.text[:200]}"
+            except Exception as e:
+                odds_error = str(e)
 
         # 4. Build predictions per game
         results = []
@@ -343,6 +343,8 @@ async def get_predictions():
             "date":           today,
             "game_count":     len(results),
             "odds_available": bool(ODDS_API_KEY and odds_lookup),
+            "ou_available":   bool(ODDS_API_KEY and ou_lookup),
+            "odds_error":     odds_error,
             "games":          results,
         }
 
