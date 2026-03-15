@@ -26,8 +26,9 @@ function formatVolume(n) {
 function formatDate(dateStr, timeframe) {
   const d = new Date(dateStr);
   if (timeframe === "1d") return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+  if (timeframe === "5d") return d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
   if (timeframe === "6m") return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-  if (timeframe === "5y") return d.toLocaleDateString("en-US", { month: "short", year: "2-digit" });
+  if (timeframe === "1y") return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
   return d.toLocaleDateString("en-US", { month: "short", year: "numeric" });
 }
 
@@ -1133,7 +1134,7 @@ export default function App() {
                   <button className={`tf-btn ${chartType === "candle" ? "active" : ""}`} onClick={() => setChartType("candle")}>CANDLE</button>
                 </div>
                 <div className="tf-group">
-                  {["1d", "6m", "5y", "10y"].map(tf => (
+                  {["1d", "5d", "6m", "1y"].map(tf => (
                     <button key={tf} className={`tf-btn ${timeframe === tf ? "active" : ""}`}
                       onClick={() => handleTimeframe(tf)} disabled={!ticker || loadingChart}>
                       {tf.toUpperCase()}

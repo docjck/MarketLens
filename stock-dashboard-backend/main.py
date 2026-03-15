@@ -53,9 +53,9 @@ app.add_middleware(
 
 TIMEFRAME_MAP = {
     "1d":  {"period": "1d",   "interval": "5m"},
+    "5d":  {"period": "5d",   "interval": "30m"},
     "6m":  {"period": "6mo",  "interval": "1d"},
-    "5y":  {"period": "5y",   "interval": "1wk"},
-    "10y": {"period": "10y",  "interval": "1mo"},
+    "1y":  {"period": "1y",   "interval": "1d"},
 }
 
 
