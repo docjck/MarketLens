@@ -9,6 +9,7 @@ import logging
 import requests as req_lib
 import sqlite3
 import os
+from datetime import datetime
 from nhl_router import router as nhl_router
 
 logging.basicConfig(level=logging.INFO)
@@ -135,6 +136,55 @@ def search_ticker(ticker: str):
 
     except HTTPException:
         raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/fundamentals/{ticker}")
+def get_fundamentals(ticker: str):
+    """Return PE ratios, dividend yield, rate, dates, and payment history."""
+    sym = ticker.upper()
+    try:
+        tk = yf.Ticker(sym)
+        info = tk.info or {}
+
+        trailing_pe    = info.get("trailingPE")
+        forward_pe     = info.get("forwardPE")
+        dividend_yield = info.get("dividendYield")   # decimal, e.g. 0.0245
+        dividend_rate  = info.get("dividendRate")    # annual $ per share
+        ex_div_ts      = info.get("exDividendDate")  # unix timestamp
+        last_div_value = info.get("lastDividendValue")
+        last_div_ts    = info.get("lastDividendDate")
+
+        def ts_to_date(ts):
+            try: return datetime.fromtimestamp(int(ts)).strftime("%Y-%m-%d")
+            except Exception: return None
+
+        # Historical dividends — last 12 payments, most recent first
+        div_history = []
+        try:
+            divs = tk.dividends
+            if not divs.empty:
+                for date, amount in divs.tail(12).items():
+                    div_history.append({
+                        "date":   date.strftime("%Y-%m-%d"),
+                        "amount": round(float(amount), 4),
+                    })
+                div_history.reverse()
+        except Exception:
+            pass
+
+        return {
+            "ticker":             sym,
+            "trailing_pe":        round(float(trailing_pe), 2)     if trailing_pe    else None,
+            "forward_pe":         round(float(forward_pe), 2)      if forward_pe     else None,
+            "dividend_yield":     round(float(dividend_yield)*100, 2) if dividend_yield else None,
+            "dividend_rate":      round(float(dividend_rate), 4)   if dividend_rate  else None,
+            "ex_dividend_date":   ts_to_date(ex_div_ts)            if ex_div_ts      else None,
+            "last_dividend_value": round(float(last_div_value), 4) if last_div_value else None,
+            "last_dividend_date": ts_to_date(last_div_ts)          if last_div_ts    else None,
+            "dividend_history":   div_history,
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

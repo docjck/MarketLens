@@ -570,6 +570,105 @@ function Watchlist({ watchlist, activeTicker, onSelect, onRemove }) {
   );
 }
 
+// ─── Fundamentals Card ────────────────────────────────────────────────────────
+
+function FundamentalsCard({ data, loading }) {
+  const [histOpen, setHistOpen] = useState(false);
+
+  if (loading) return (
+    <div style={{
+      background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.07)",
+      borderRadius: 12, padding: "14px 22px", display: "flex", gap: 32,
+    }}>
+      {[72, 72, 96, 96, 96, 96].map((w, i) => (
+        <div key={i} style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <SkeletonBar width={w} height={9} />
+          <SkeletonBar width={w * 0.7} height={14} />
+        </div>
+      ))}
+    </div>
+  );
+
+  if (!data) return null;
+
+  const hasDividend = data.dividend_yield != null || data.dividend_rate != null;
+
+  function Stat({ label, value, sub }) {
+    return (
+      <div>
+        <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 9, color: "#334155", letterSpacing: 2, marginBottom: 5 }}>{label}</div>
+        <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 15, fontWeight: 600, color: value ? "#e2e8f0" : "#1e293b" }}>{value ?? "—"}</div>
+        {sub && <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 10, color: "#475569", marginTop: 3 }}>{sub}</div>}
+      </div>
+    );
+  }
+
+  function fmtDate(str) {
+    if (!str) return null;
+    return new Date(str + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+  }
+
+  return (
+    <div style={{
+      background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.07)",
+      borderRadius: 12, padding: "14px 22px", display: "flex", flexDirection: "column", gap: 14,
+      animation: "fadeIn 0.25s ease",
+    }}>
+      <div style={{ display: "flex", gap: 28, flexWrap: "wrap", alignItems: "flex-start" }}>
+
+        {/* PE ratios */}
+        <Stat label="TRAILING P/E" value={data.trailing_pe != null ? `${data.trailing_pe}x` : null} />
+        <Stat label="FORWARD P/E"  value={data.forward_pe  != null ? `${data.forward_pe}x`  : null} />
+
+        {hasDividend && (
+          <div style={{ width: 1, background: "rgba(255,255,255,0.06)", alignSelf: "stretch", margin: "0 4px" }} />
+        )}
+
+        {/* Dividend stats */}
+        {hasDividend && <>
+          <Stat label="DIV YIELD"   value={data.dividend_yield != null ? `${data.dividend_yield}%` : null} />
+          <Stat label="ANNUAL RATE" value={data.dividend_rate != null ? `$${data.dividend_rate}/sh` : null} />
+          <Stat label="EX-DIV DATE" value={fmtDate(data.ex_dividend_date)} />
+          <Stat
+            label="LAST PAYMENT"
+            value={data.last_dividend_value != null ? `$${data.last_dividend_value}` : null}
+            sub={fmtDate(data.last_dividend_date)}
+          />
+        </>}
+      </div>
+
+      {/* Dividend history */}
+      {hasDividend && data.dividend_history?.length > 0 && (
+        <div>
+          <button onClick={() => setHistOpen(o => !o)} style={{
+            background: "none", border: "none", cursor: "pointer", padding: 0,
+            fontFamily: "'IBM Plex Mono', monospace", fontSize: 10, color: "#475569",
+            letterSpacing: 1.5, display: "flex", alignItems: "center", gap: 6,
+          }}>
+            <span style={{ fontSize: 8 }}>{histOpen ? "▾" : "▸"}</span>
+            DIVIDEND HISTORY ({data.dividend_history.length} payments)
+          </button>
+          {histOpen && (
+            <div style={{ marginTop: 10, display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {data.dividend_history.map((d, i) => (
+                <div key={i} style={{
+                  background: "rgba(0,0,0,0.3)", borderRadius: 6, padding: "6px 10px",
+                  fontFamily: "'IBM Plex Mono', monospace", textAlign: "center",
+                }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: "#00ff88" }}>${d.amount}</div>
+                  <div style={{ fontSize: 9, color: "#334155", marginTop: 3 }}>
+                    {new Date(d.date + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "2-digit" })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Main App ─────────────────────────────────────────────────────────────────
 
 export default function App() {
@@ -591,6 +690,8 @@ export default function App() {
   const [suggestions, setSuggestions] = useState([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [loadingSuggest, setLoadingSuggest] = useState(false);
+  const [fundamentals, setFundamentals] = useState(null);
+  const [loadingFundamentals, setLoadingFundamentals] = useState(false);
   const [drawMode, setDrawMode] = useState(false);
   const [drawTool, setDrawTool] = useState("line");
   const [drawColor, setDrawColor] = useState("#f59e0b");
@@ -659,6 +760,8 @@ export default function App() {
     setLoadingSearch(true);
     setSearchError(null);
     setInfo(null);
+    setFundamentals(null);
+    setLoadingFundamentals(true);
     try {
       const res = await fetch(`${API_BASE}/search/${sym}`);
       if (!res.ok) {
@@ -669,9 +772,16 @@ export default function App() {
       setInfo(json);
       setTicker(sym);
       setTimeframe("6m");
+      // Fetch fundamentals in parallel — don't block chart load
+      fetch(`${API_BASE}/fundamentals/${sym}`)
+        .then(r => r.ok ? r.json() : null)
+        .then(f => setFundamentals(f))
+        .catch(() => {})
+        .finally(() => setLoadingFundamentals(false));
       await fetchChart(sym, "6m", existingCache);
     } catch (e) {
       setSearchError(e.message);
+      setLoadingFundamentals(false);
     } finally {
       setLoadingSearch(false);
     }
@@ -962,6 +1072,10 @@ export default function App() {
               </div>
             </div>
           ) : null}
+
+          {(loadingFundamentals || fundamentals) && (
+            <FundamentalsCard data={fundamentals} loading={loadingFundamentals} />
+          )}
 
           <div className="chart-card">
             <div className="chart-header">
