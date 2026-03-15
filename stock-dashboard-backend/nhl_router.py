@@ -177,9 +177,14 @@ async def get_predictions():
                         e_home = event.get("home_team", "")
                         e_away = event.get("away_team", "")
                         key    = f"{e_home}|{e_away}"
-                        for book in event.get("bookmakers", [])[:1]:
+                        # Search all bookmakers for each market — the first bookmaker
+                        # may offer h2h but not totals (or vice versa)
+                        h2h_done = totals_done = False
+                        for book in event.get("bookmakers", []):
+                            if h2h_done and totals_done:
+                                break
                             for market in book.get("markets", []):
-                                if market["key"] == "h2h":
+                                if not h2h_done and market["key"] == "h2h":
                                     mls = {o["name"]: o["price"] for o in market["outcomes"]}
                                     odds_lookup[key] = {
                                         "home_team": e_home,
@@ -187,7 +192,8 @@ async def get_predictions():
                                         "home_ml":   mls.get(e_home),
                                         "away_ml":   mls.get(e_away),
                                     }
-                                elif market["key"] == "totals":
+                                    h2h_done = True
+                                elif not totals_done and market["key"] == "totals":
                                     pts = {o["name"]: o for o in market["outcomes"]}
                                     over  = pts.get("Over", {})
                                     under = pts.get("Under", {})
@@ -199,6 +205,7 @@ async def get_predictions():
                                             "over_ml":   over.get("price"),
                                             "under_ml":  under.get("price"),
                                         }
+                                        totals_done = True
                 else:
                     odds_error = f"Odds API {resp.status_code}: {resp.text[:200]}"
             except Exception as e:
