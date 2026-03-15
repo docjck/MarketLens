@@ -38,19 +38,40 @@ function formatDate(dateStr) {
 
 // ─── Game Card (Today) ─────────────────────────────────────────────────────────
 
-function GameCard({ game }) {
-  const { strong_flag, flagged, home_edge } = game;
+function Badge({ label, bg, color, border }) {
+  return (
+    <div style={{
+      background: bg, border: `1px solid ${border}`, color,
+      borderRadius: 4, padding: "2px 8px",
+      fontFamily: "'IBM Plex Mono', monospace", fontSize: 9, letterSpacing: 1.5,
+      whiteSpace: "nowrap",
+    }}>{label}</div>
+  );
+}
 
-  const borderColor = strong_flag
+function GameCard({ game }) {
+  const { strong_flag, flagged, ou_flagged, ou_strong, ou_edge } = game;
+
+  const anyStrong  = strong_flag || ou_strong;
+  const anyFlagged = flagged || ou_flagged;
+
+  const borderColor = anyStrong
     ? "rgba(239,68,68,0.5)"
-    : flagged
+    : anyFlagged
     ? "rgba(245,158,11,0.4)"
     : "rgba(255,255,255,0.07)";
 
-  const flagBadge = strong_flag
-    ? { label: "STRONG EDGE", bg: "rgba(239,68,68,0.15)", color: "#ef4444", border: "rgba(239,68,68,0.3)" }
+  const mlBadge = strong_flag
+    ? { label: "STRONG EDGE",  bg: "rgba(239,68,68,0.15)",  color: "#ef4444", border: "rgba(239,68,68,0.3)" }
     : flagged
-    ? { label: "EDGE", bg: "rgba(245,158,11,0.12)", color: "#f59e0b", border: "rgba(245,158,11,0.3)" }
+    ? { label: "EDGE",         bg: "rgba(245,158,11,0.12)", color: "#f59e0b", border: "rgba(245,158,11,0.3)" }
+    : null;
+
+  const ouDir   = ou_edge != null ? (ou_edge > 0 ? "OVER" : "UNDER") : null;
+  const ouBadge = ou_strong
+    ? { label: `STRONG ${ouDir} EDGE`, bg: "rgba(239,68,68,0.15)",  color: "#ef4444", border: "rgba(239,68,68,0.3)" }
+    : ou_flagged
+    ? { label: `${ouDir} EDGE`,        bg: "rgba(245,158,11,0.12)", color: "#f59e0b", border: "rgba(245,158,11,0.3)" }
     : null;
 
   return (
@@ -69,15 +90,10 @@ function GameCard({ game }) {
         <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 10, color: "#334155", letterSpacing: 2 }}>
           {formatTime(game.start_utc)}
         </div>
-        {flagBadge && (
-          <div style={{
-            background: flagBadge.bg, border: `1px solid ${flagBadge.border}`,
-            color: flagBadge.color, borderRadius: 4, padding: "2px 8px",
-            fontFamily: "'IBM Plex Mono', monospace", fontSize: 9, letterSpacing: 1.5,
-          }}>
-            {flagBadge.label}
-          </div>
-        )}
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
+          {mlBadge  && <Badge {...mlBadge} />}
+          {ouBadge  && <Badge {...ouBadge} />}
+        </div>
       </div>
 
       {/* Teams */}
@@ -149,6 +165,73 @@ function GameCard({ game }) {
           );
         })}
       </div>
+
+      {/* Over / Under */}
+      {game.ou_line != null && (
+        <div style={{
+          background: "rgba(0,0,0,0.25)", borderRadius: 8, overflow: "hidden",
+          fontFamily: "'IBM Plex Mono', monospace",
+        }}>
+          {/* Header */}
+          <div style={{
+            display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr 1fr",
+            borderBottom: "1px solid rgba(255,255,255,0.05)",
+          }}>
+            {["OVER / UNDER", "LINE", "MODEL TOTAL", "MODEL P(OVR)", "IMPLIED P(OVR)"].map((h, i) => (
+              <div key={i} style={{
+                padding: "6px 10px", fontSize: 9, color: "#334155", letterSpacing: 1.5,
+                textAlign: i === 0 ? "left" : "center",
+              }}>{h}</div>
+            ))}
+          </div>
+          {/* Values row */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr 1fr" }}>
+            {/* Label */}
+            <div style={{ padding: "8px 10px", fontSize: 10, color: "#475569", letterSpacing: 1 }}>
+              {game.over_ml != null ? `${mlDisplay(game.over_ml)} / ${mlDisplay(game.under_ml)}` : "no odds"}
+            </div>
+            {/* Line */}
+            <div style={{ padding: "8px 10px", textAlign: "center", fontSize: 13, fontWeight: 600, color: "#e2e8f0" }}>
+              {game.ou_line}
+            </div>
+            {/* Model expected */}
+            <div style={{ padding: "8px 10px", textAlign: "center", fontSize: 13, fontWeight: 600, color: "#e2e8f0" }}>
+              {game.model_expected ?? "—"}
+            </div>
+            {/* Model P(over) */}
+            <div style={{ padding: "8px 10px", textAlign: "center", fontSize: 13, fontWeight: 600, color: "#e2e8f0" }}>
+              {pct(game.model_over_prob)}
+            </div>
+            {/* Implied P(over) */}
+            <div style={{ padding: "8px 10px", textAlign: "center", fontSize: 13, color: game.implied_over_prob != null ? "#94a3b8" : "#334155" }}>
+              {pct(game.implied_over_prob)}
+            </div>
+          </div>
+          {/* Edge row */}
+          {game.ou_edge != null && (
+            <div style={{
+              display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr 1fr",
+              borderTop: "1px solid rgba(255,255,255,0.05)",
+            }}>
+              <div style={{ padding: "8px 10px", fontSize: 10, color: "#475569", letterSpacing: 1 }}>EDGE</div>
+              <div style={{ gridColumn: "2 / 5" }} />
+              {(() => {
+                const isStrong = Math.abs(game.ou_edge) >= 0.10;
+                const isFlag   = Math.abs(game.ou_edge) >= 0.05;
+                const color    = isStrong ? "#ef4444" : isFlag ? "#f59e0b" : "#475569";
+                const dir      = game.ou_edge > 0 ? "OVER" : "UNDER";
+                return (
+                  <div style={{
+                    padding: "8px 10px", textAlign: "center", fontSize: 12, fontWeight: 600, color,
+                  }}>
+                    {edge(game.ou_edge)} {dir}
+                  </div>
+                );
+              })()}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -440,8 +523,8 @@ export default function NHLPredictor() {
                 </div>
                 <div>
                   <div style={{ fontSize: 10, color: "#334155", letterSpacing: 2, marginBottom: 4 }}>EDGES FLAGGED</div>
-                  <div style={{ fontSize: 20, fontWeight: 600, color: data.games.filter(g => g.flagged).length > 0 ? "#f59e0b" : "#e2e8f0" }}>
-                    {data.games.filter(g => g.flagged).length}
+                  <div style={{ fontSize: 20, fontWeight: 600, color: data.games.filter(g => g.flagged || g.ou_flagged).length > 0 ? "#f59e0b" : "#e2e8f0" }}>
+                    {data.games.filter(g => g.flagged || g.ou_flagged).length}
                   </div>
                 </div>
                 <div>
@@ -466,8 +549,8 @@ export default function NHLPredictor() {
               )}
 
               {(() => {
-                const flagged = data.games.filter(g => g.flagged);
-                const rest    = data.games.filter(g => !g.flagged);
+                const flagged = data.games.filter(g => g.flagged || g.ou_flagged);
+                const rest    = data.games.filter(g => !g.flagged && !g.ou_flagged);
                 return (
                   <>
                     {flagged.length > 0 && (

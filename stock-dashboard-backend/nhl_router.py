@@ -1,5 +1,6 @@
 # nhl_router.py — NHL predictions vs odds divergence
 
+import math
 import os
 import sqlite3
 from collections import defaultdict
@@ -59,6 +60,23 @@ init_edge_picks()
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
+
+def poisson_pmf(k: int, lam: float) -> float:
+    """Poisson probability mass function P(X=k) for λ=lam."""
+    if k < 0 or lam <= 0:
+        return 0.0
+    return (lam ** k) * math.exp(-lam) / math.factorial(k)
+
+
+def model_over_prob(expected_total: float, line: float) -> float:
+    """
+    P(total goals > line) using a Poisson model.
+    Line is typically X.5 so threshold = floor(line) + 1.
+    """
+    threshold = int(line) + 1
+    p_under = sum(poisson_pmf(k, expected_total) for k in range(threshold))
+    return round(max(0.01, min(0.99, 1 - p_under)), 4)
+
 
 def moneyline_to_prob(ml: int) -> float:
     """Convert American moneyline to raw implied probability."""
@@ -143,7 +161,8 @@ async def get_predictions():
                     games_raw.append(g)
 
         # 3. Odds (optional — only if ODDS_API_KEY is set)
-        odds_lookup = {}   # "HOME_ABBREV|AWAY_ABBREV" -> {"home_ml": int, "away_ml": int}
+        odds_lookup = {}   # key -> {"home_ml", "away_ml", "home_team", "away_team"}
+        ou_lookup   = {}   # key -> {"line", "over_ml", "under_ml"}
         if ODDS_API_KEY:
             try:
                 resp = await client.get(
@@ -151,7 +170,7 @@ async def get_predictions():
                     params={
                         "apiKey": ODDS_API_KEY,
                         "regions": "us",
-                        "markets": "h2h",
+                        "markets": "h2h,totals",
                         "oddsFormat": "american",
                     },
                 )
@@ -159,16 +178,29 @@ async def get_predictions():
                     for event in resp.json():
                         e_home = event.get("home_team", "")
                         e_away = event.get("away_team", "")
+                        key    = f"{e_home}|{e_away}"
                         for book in event.get("bookmakers", [])[:1]:
                             for market in book.get("markets", []):
                                 if market["key"] == "h2h":
                                     mls = {o["name"]: o["price"] for o in market["outcomes"]}
-                                    odds_lookup[f"{e_home}|{e_away}"] = {
+                                    odds_lookup[key] = {
                                         "home_team": e_home,
                                         "away_team": e_away,
-                                        "home_ml": mls.get(e_home),
-                                        "away_ml": mls.get(e_away),
+                                        "home_ml":   mls.get(e_home),
+                                        "away_ml":   mls.get(e_away),
                                     }
+                                elif market["key"] == "totals":
+                                    pts = {o["name"]: o for o in market["outcomes"]}
+                                    over  = pts.get("Over", {})
+                                    under = pts.get("Under", {})
+                                    if over.get("point") is not None:
+                                        ou_lookup[key] = {
+                                            "home_team": e_home,
+                                            "away_team": e_away,
+                                            "line":      over["point"],
+                                            "over_ml":   over.get("price"),
+                                            "under_ml":  under.get("price"),
+                                        }
             except Exception:
                 pass  # odds are optional — don't fail the whole response
 
@@ -211,6 +243,37 @@ async def get_predictions():
             flagged    = bool(home_edge is not None and abs(home_edge) >= EDGE_FLAG)
             strong     = bool(home_edge is not None and abs(home_edge) >= EDGE_STRONG)
 
+            # Over/Under
+            ou_line = over_ml = under_ml = None
+            model_expected = model_over = implied_over = ou_edge = None
+            ou_flagged = ou_strong = False
+
+            for key, od in ou_lookup.items():
+                if h_place.lower() in od["home_team"].lower() and a_place.lower() in od["away_team"].lower():
+                    ou_line   = od.get("line")
+                    over_ml   = od.get("over_ml")
+                    under_ml  = od.get("under_ml")
+                    break
+
+            if ou_line is not None:
+                model_expected = round(
+                    h_stats.get("goalFor", 0) / max(h_stats.get("gamesPlayed", 1), 1) +
+                    a_stats.get("goalFor", 0) / max(a_stats.get("gamesPlayed", 1), 1),
+                    2,
+                )
+                model_over = model_over_prob(model_expected, ou_line)
+
+                if over_ml is not None and under_ml is not None:
+                    raw_o = moneyline_to_prob(int(over_ml))
+                    raw_u = moneyline_to_prob(int(under_ml))
+                    vig   = raw_o + raw_u
+                    implied_over = round(raw_o / vig, 4) if vig else None
+
+                if implied_over is not None:
+                    ou_edge    = round(model_over - implied_over, 4)
+                    ou_flagged = abs(ou_edge) >= EDGE_FLAG
+                    ou_strong  = abs(ou_edge) >= EDGE_STRONG
+
             results.append({
                 "game_id":           g.get("id"),
                 "start_utc":         g.get("startTimeUTC", ""),
@@ -234,10 +297,20 @@ async def get_predictions():
                 "away_edge":         away_edge,
                 "flagged":           flagged,
                 "strong_flag":       strong,
+                # Over/Under
+                "ou_line":           ou_line,
+                "over_ml":           over_ml,
+                "under_ml":          under_ml,
+                "model_expected":    model_expected,
+                "model_over_prob":   model_over,
+                "implied_over_prob": implied_over,
+                "ou_edge":           ou_edge,
+                "ou_flagged":        ou_flagged,
+                "ou_strong":         ou_strong,
             })
 
-        # Sort: flagged first, then by start time
-        results.sort(key=lambda x: (not x["flagged"], x["start_utc"]))
+        # Sort: any edge flagged first, then by start time
+        results.sort(key=lambda x: (not (x["flagged"] or x["ou_flagged"]), x["start_utc"]))
 
         # 5. Persist flagged games to edge_picks (INSERT OR IGNORE — safe to call on refresh)
         flagged_games = [g for g in results if g["flagged"] and g["game_id"] is not None]
