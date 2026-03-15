@@ -1,6 +1,8 @@
 # nhl_router.py — NHL predictions vs odds divergence
 
 import os
+import sqlite3
+from collections import defaultdict
 from datetime import datetime, timezone
 
 import httpx
@@ -15,6 +17,45 @@ ODDS_API_KEY = os.getenv("ODDS_API_KEY", "")
 EDGE_FLAG   = 0.05   # flag if model vs market diverges by 5%+
 EDGE_STRONG = 0.10   # strong flag at 10%+
 HOME_ADV    = 0.04   # home ice advantage
+
+DB_PATH = os.path.join(os.path.dirname(__file__), "watchlist.db")
+
+
+# ─── Database ─────────────────────────────────────────────────────────────────
+
+def get_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_edge_picks():
+    with get_db() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS edge_picks (
+                game_id       INTEGER PRIMARY KEY,
+                date          TEXT NOT NULL,
+                home_abbrev   TEXT NOT NULL,
+                away_abbrev   TEXT NOT NULL,
+                home_name     TEXT NOT NULL,
+                away_name     TEXT NOT NULL,
+                edge_team     TEXT NOT NULL,
+                edge_value    REAL NOT NULL,
+                strong_flag   INTEGER NOT NULL DEFAULT 0,
+                model_prob    REAL,
+                implied_prob  REAL,
+                home_ml       INTEGER,
+                away_ml       INTEGER,
+                start_utc     TEXT,
+                actual_winner TEXT,
+                result        TEXT NOT NULL DEFAULT 'PENDING',
+                saved_at      TEXT DEFAULT (datetime('now'))
+            )
+        """)
+        conn.commit()
+
+
+init_edge_picks()
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -61,13 +102,14 @@ def model_home_prob(home: dict, away: dict) -> float:
     return round(max(0.20, min(0.80, h_prob)), 4)
 
 
-# ─── Main endpoint ────────────────────────────────────────────────────────────
+# ─── Predictions endpoint ─────────────────────────────────────────────────────
 
 @router.get("/predictions")
 async def get_predictions():
     """
     Return model predictions vs market odds for NHL games today.
     Flags games where the model diverges from implied odds by >5%.
+    Automatically saves flagged games to edge_picks for result tracking.
     """
     async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
 
@@ -170,32 +212,59 @@ async def get_predictions():
             strong     = bool(home_edge is not None and abs(home_edge) >= EDGE_STRONG)
 
             results.append({
-                "game_id":          g.get("id"),
-                "start_utc":        g.get("startTimeUTC", ""),
-                "home_abbrev":      h_abbrev,
-                "away_abbrev":      a_abbrev,
-                "home_name":        f"{h_place} {h_common}".strip(),
-                "away_name":        f"{a_place} {a_common}".strip(),
-                "home_record":      f"{h_stats.get('wins','?')}-{h_stats.get('losses','?')}-{h_stats.get('otLosses','?')}",
-                "away_record":      f"{a_stats.get('wins','?')}-{a_stats.get('losses','?')}-{a_stats.get('otLosses','?')}",
-                "home_l10":         h_stats.get("l10Wins"),
-                "away_l10":         a_stats.get("l10Wins"),
-                "home_gf_pg":       round(h_stats.get("goalFor", 0) / max(h_stats.get("gamesPlayed", 1), 1), 2),
-                "away_gf_pg":       round(a_stats.get("goalFor", 0) / max(a_stats.get("gamesPlayed", 1), 1), 2),
-                "model_home_prob":  model_h,
-                "model_away_prob":  model_a,
+                "game_id":           g.get("id"),
+                "start_utc":         g.get("startTimeUTC", ""),
+                "home_abbrev":       h_abbrev,
+                "away_abbrev":       a_abbrev,
+                "home_name":         f"{h_place} {h_common}".strip(),
+                "away_name":         f"{a_place} {a_common}".strip(),
+                "home_record":       f"{h_stats.get('wins','?')}-{h_stats.get('losses','?')}-{h_stats.get('otLosses','?')}",
+                "away_record":       f"{a_stats.get('wins','?')}-{a_stats.get('losses','?')}-{a_stats.get('otLosses','?')}",
+                "home_l10":          h_stats.get("l10Wins"),
+                "away_l10":          a_stats.get("l10Wins"),
+                "home_gf_pg":        round(h_stats.get("goalFor", 0) / max(h_stats.get("gamesPlayed", 1), 1), 2),
+                "away_gf_pg":        round(a_stats.get("goalFor", 0) / max(a_stats.get("gamesPlayed", 1), 1), 2),
+                "model_home_prob":   model_h,
+                "model_away_prob":   model_a,
                 "implied_home_prob": implied_h,
                 "implied_away_prob": implied_a,
-                "home_ml":          home_ml,
-                "away_ml":          away_ml,
-                "home_edge":        home_edge,
-                "away_edge":        away_edge,
-                "flagged":          flagged,
-                "strong_flag":      strong,
+                "home_ml":           home_ml,
+                "away_ml":           away_ml,
+                "home_edge":         home_edge,
+                "away_edge":         away_edge,
+                "flagged":           flagged,
+                "strong_flag":       strong,
             })
 
         # Sort: flagged first, then by start time
         results.sort(key=lambda x: (not x["flagged"], x["start_utc"]))
+
+        # 5. Persist flagged games to edge_picks (INSERT OR IGNORE — safe to call on refresh)
+        flagged_games = [g for g in results if g["flagged"] and g["game_id"] is not None]
+        if flagged_games:
+            with get_db() as conn:
+                for g in flagged_games:
+                    edge_team  = "home" if g["home_edge"] > 0 else "away"
+                    edge_value = abs(g["home_edge"])
+                    model_prob   = g["model_home_prob"]  if edge_team == "home" else g["model_away_prob"]
+                    implied_prob = g["implied_home_prob"] if edge_team == "home" else g["implied_away_prob"]
+                    conn.execute("""
+                        INSERT OR IGNORE INTO edge_picks
+                            (game_id, date, home_abbrev, away_abbrev, home_name, away_name,
+                             edge_team, edge_value, strong_flag, model_prob, implied_prob,
+                             home_ml, away_ml, start_utc)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        g["game_id"], today,
+                        g["home_abbrev"], g["away_abbrev"],
+                        g["home_name"],   g["away_name"],
+                        edge_team, edge_value,
+                        1 if g["strong_flag"] else 0,
+                        model_prob, implied_prob,
+                        g["home_ml"], g["away_ml"],
+                        g["start_utc"],
+                    ))
+                conn.commit()
 
         return {
             "date":           today,
@@ -203,3 +272,107 @@ async def get_predictions():
             "odds_available": bool(ODDS_API_KEY and odds_lookup),
             "games":          results,
         }
+
+
+# ─── Edge history endpoint ────────────────────────────────────────────────────
+
+@router.get("/edge-history")
+async def get_edge_history():
+    """
+    Return all stored edge picks grouped by date with W/L results.
+    Automatically resolves any PENDING picks from past dates using NHL score API.
+    """
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    # Load all picks
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM edge_picks ORDER BY date DESC, start_utc"
+        ).fetchall()
+    picks = [dict(r) for r in rows]
+
+    if not picks:
+        return {
+            "picks_by_date": [],
+            "totals": {"total": 0, "wins": 0, "losses": 0, "pending": 0, "win_rate": None},
+        }
+
+    # Resolve PENDING picks for dates before today
+    pending_past = [p for p in picks if p["result"] == "PENDING" and p["date"] < today]
+    if pending_past:
+        dates_to_check = list({p["date"] for p in pending_past})
+        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+            for date in dates_to_check:
+                try:
+                    resp = await client.get(f"{NHL_BASE}/score/{date}")
+                    if resp.status_code != 200:
+                        continue
+                    score_games = resp.json().get("games", [])
+                    with get_db() as conn:
+                        for sg in score_games:
+                            state = sg.get("gameState", "")
+                            if state not in ("OFF", "FINAL"):
+                                continue
+                            gid     = sg.get("id")
+                            h_score = sg.get("homeTeam", {}).get("score") or 0
+                            a_score = sg.get("awayTeam", {}).get("score") or 0
+                            if h_score == a_score:
+                                continue  # shouldn't happen for final games
+                            actual_winner = "home" if h_score > a_score else "away"
+                            existing = conn.execute(
+                                "SELECT game_id, edge_team FROM edge_picks WHERE game_id = ? AND result = 'PENDING'",
+                                (gid,)
+                            ).fetchone()
+                            if existing:
+                                result = "WIN" if existing["edge_team"] == actual_winner else "LOSS"
+                                conn.execute(
+                                    "UPDATE edge_picks SET actual_winner = ?, result = ? WHERE game_id = ?",
+                                    (actual_winner, result, gid)
+                                )
+                        conn.commit()
+                except Exception:
+                    pass
+
+        # Reload after updates
+        with get_db() as conn:
+            rows = conn.execute(
+                "SELECT * FROM edge_picks ORDER BY date DESC, start_utc"
+            ).fetchall()
+        picks = [dict(r) for r in rows]
+
+    # Group by date
+    by_date: dict = defaultdict(list)
+    for p in picks:
+        by_date[p["date"]].append(p)
+
+    picks_by_date = []
+    for date in sorted(by_date.keys(), reverse=True):
+        day_picks = by_date[date]
+        wins    = sum(1 for p in day_picks if p["result"] == "WIN")
+        losses  = sum(1 for p in day_picks if p["result"] == "LOSS")
+        pending = sum(1 for p in day_picks if p["result"] == "PENDING")
+        picks_by_date.append({
+            "date":    date,
+            "picks":   day_picks,
+            "wins":    wins,
+            "losses":  losses,
+            "pending": pending,
+        })
+
+    # Running totals
+    total_wins    = sum(1 for p in picks if p["result"] == "WIN")
+    total_losses  = sum(1 for p in picks if p["result"] == "LOSS")
+    total_pending = sum(1 for p in picks if p["result"] == "PENDING")
+    total_resolved = total_wins + total_losses
+    win_rate = round(total_wins / total_resolved, 4) if total_resolved > 0 else None
+
+    return {
+        "picks_by_date": picks_by_date,
+        "totals": {
+            "total":   len(picks),
+            "wins":    total_wins,
+            "losses":  total_losses,
+            "pending": total_pending,
+            "win_rate": win_rate,
+        },
+    }
