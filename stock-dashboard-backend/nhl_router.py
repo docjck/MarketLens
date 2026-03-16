@@ -4,10 +4,12 @@ import math
 import os
 import sqlite3
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, date as date_type, timezone
+from typing import List
 
 import httpx
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, Path
+from pydantic import BaseModel, field_validator
 
 router = APIRouter(prefix="/nhl", tags=["nhl"])
 
@@ -456,6 +458,281 @@ async def get_edge_history():
             "wins":    total_wins,
             "losses":  total_losses,
             "pending": total_pending,
+            "win_rate": win_rate,
+        },
+    }
+
+
+# ─── Backtest ─────────────────────────────────────────────────────────────────
+
+def init_backtest_table():
+    with get_db() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS backtest_picks (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_date  TEXT NOT NULL,
+                game_id       INTEGER NOT NULL,
+                home_name     TEXT NOT NULL,
+                away_name     TEXT NOT NULL,
+                home_abbrev   TEXT NOT NULL,
+                away_abbrev   TEXT NOT NULL,
+                picked_team   TEXT NOT NULL,
+                model_h_prob  REAL,
+                model_a_prob  REAL,
+                actual_winner TEXT,
+                home_score    INTEGER,
+                away_score    INTEGER,
+                result        TEXT NOT NULL DEFAULT 'PENDING',
+                saved_at      TEXT DEFAULT (datetime('now')),
+                UNIQUE(session_date, game_id)
+            )
+        """)
+        conn.commit()
+
+
+init_backtest_table()
+
+
+class BacktestPick(BaseModel):
+    game_id: int
+    picked_team: str
+    home_name: str
+    away_name: str
+    home_abbrev: str
+    away_abbrev: str
+    model_home_prob: float
+    model_away_prob: float
+
+    @field_validator("picked_team")
+    @classmethod
+    def validate_picked_team(cls, v: str) -> str:
+        if v not in ("home", "away"):
+            raise ValueError("picked_team must be 'home' or 'away'")
+        return v
+
+
+class BacktestScoreRequest(BaseModel):
+    date: str
+    picks: List[BacktestPick]
+
+    @field_validator("date")
+    @classmethod
+    def validate_date(cls, v: str) -> str:
+        try:
+            date_type.fromisoformat(v)
+        except ValueError:
+            raise ValueError("Invalid date format, expected YYYY-MM-DD")
+        return v
+
+
+@router.get("/backtest/games/{date}")
+async def get_backtest_games(date: str = Path(..., pattern=r"^\d{4}-\d{2}-\d{2}$")):
+    """Return model predictions for a past date — no actual scores included."""
+    try:
+        req_dt = date_type.fromisoformat(date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date")
+
+    today = datetime.now(timezone.utc).date()
+    if req_dt >= today:
+        raise HTTPException(status_code=400, detail="Date must be in the past")
+
+    async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+        # Historical standings for that date
+        try:
+            resp = await client.get(f"{NHL_BASE}/standings/{date}")
+            resp.raise_for_status()
+            if len(resp.content) > 2 * 1024 * 1024:
+                return {"error": "Standings response too large", "games": []}
+            standings_raw = resp.json().get("standings", [])
+        except Exception as e:
+            return {"error": f"Standings fetch failed: {e}", "games": []}
+
+        team_stats: dict = {}
+        for t in standings_raw:
+            abbrev = t.get("teamAbbrev", {}).get("default", "")
+            if abbrev:
+                team_stats[abbrev] = t
+
+        # Schedule for that date
+        try:
+            resp = await client.get(f"{NHL_BASE}/schedule/{date}")
+            resp.raise_for_status()
+            schedule = resp.json()
+        except Exception as e:
+            return {"error": f"Schedule fetch failed: {e}", "games": []}
+
+        games_raw = []
+        for week in schedule.get("gameWeek", []):
+            for g in week.get("games", []):
+                if g.get("gameType") == 2:
+                    games_raw.append(g)
+
+        results = []
+        for g in games_raw:
+            h_abbrev = g.get("homeTeam", {}).get("abbrev", "")
+            a_abbrev = g.get("awayTeam", {}).get("abbrev", "")
+            h_place  = g.get("homeTeam", {}).get("placeName", {}).get("default", h_abbrev)
+            a_place  = g.get("awayTeam", {}).get("placeName", {}).get("default", a_abbrev)
+            h_common = g.get("homeTeam", {}).get("commonName", {}).get("default", "")
+            a_common = g.get("awayTeam", {}).get("commonName", {}).get("default", "")
+
+            h_stats = team_stats.get(h_abbrev, {})
+            a_stats = team_stats.get(a_abbrev, {})
+
+            model_h    = model_home_prob(h_stats, a_stats)
+            model_a    = round(1 - model_h, 4)
+            confidence = round(abs(model_h - 0.5), 4)
+
+            results.append({
+                "game_id":         g.get("id"),
+                "start_utc":       g.get("startTimeUTC", ""),
+                "home_abbrev":     h_abbrev,
+                "away_abbrev":     a_abbrev,
+                "home_name":       f"{h_place} {h_common}".strip(),
+                "away_name":       f"{a_place} {a_common}".strip(),
+                "home_record":     f"{h_stats.get('wins','?')}-{h_stats.get('losses','?')}-{h_stats.get('otLosses','?')}",
+                "away_record":     f"{a_stats.get('wins','?')}-{a_stats.get('losses','?')}-{a_stats.get('otLosses','?')}",
+                "model_home_prob": model_h,
+                "model_away_prob": model_a,
+                "confidence":      confidence,
+            })
+
+        # Sort strongest model lean first
+        results.sort(key=lambda x: x["confidence"], reverse=True)
+
+        return {"date": date, "game_count": len(results), "games": results}
+
+
+@router.post("/backtest/score")
+async def score_backtest(req: BacktestScoreRequest):
+    """Score a set of user picks against actual NHL results and persist to DB."""
+    try:
+        req_dt = date_type.fromisoformat(req.date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date")
+
+    today = datetime.now(timezone.utc).date()
+    if req_dt >= today:
+        raise HTTPException(status_code=400, detail="Date must be in the past")
+
+    if not req.picks:
+        raise HTTPException(status_code=400, detail="No picks provided")
+
+    async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+        try:
+            resp = await client.get(f"{NHL_BASE}/score/{req.date}")
+            resp.raise_for_status()
+            score_games = resp.json().get("games", [])
+        except Exception:
+            raise HTTPException(status_code=500, detail="Failed to fetch game scores")
+
+    score_lookup: dict = {}
+    for sg in score_games:
+        if sg.get("gameState") in ("OFF", "FINAL"):
+            gid     = sg.get("id")
+            h_score = sg.get("homeTeam", {}).get("score") or 0
+            a_score = sg.get("awayTeam", {}).get("score") or 0
+            if h_score != a_score:
+                score_lookup[gid] = {
+                    "home_score":    h_score,
+                    "away_score":    a_score,
+                    "actual_winner": "home" if h_score > a_score else "away",
+                }
+
+    scored = []
+    with get_db() as conn:
+        for pick in req.picks:
+            score = score_lookup.get(pick.game_id)
+            if score:
+                actual_winner = score["actual_winner"]
+                result        = "WIN" if pick.picked_team == actual_winner else "LOSS"
+                home_score    = score["home_score"]
+                away_score    = score["away_score"]
+            else:
+                actual_winner = None
+                result        = "PENDING"
+                home_score    = None
+                away_score    = None
+
+            conn.execute("""
+                INSERT OR REPLACE INTO backtest_picks
+                    (session_date, game_id, home_name, away_name, home_abbrev, away_abbrev,
+                     picked_team, model_h_prob, model_a_prob, actual_winner,
+                     home_score, away_score, result)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                req.date, pick.game_id, pick.home_name, pick.away_name,
+                pick.home_abbrev, pick.away_abbrev,
+                pick.picked_team, pick.model_home_prob, pick.model_away_prob,
+                actual_winner, home_score, away_score, result,
+            ))
+
+            scored.append({
+                "game_id":       pick.game_id,
+                "home_name":     pick.home_name,
+                "away_name":     pick.away_name,
+                "picked_team":   pick.picked_team,
+                "model_prob":    pick.model_home_prob if pick.picked_team == "home" else pick.model_away_prob,
+                "actual_winner": actual_winner,
+                "home_score":    home_score,
+                "away_score":    away_score,
+                "result":        result,
+            })
+        conn.commit()
+
+    wins    = sum(1 for s in scored if s["result"] == "WIN")
+    losses  = sum(1 for s in scored if s["result"] == "LOSS")
+    pending = sum(1 for s in scored if s["result"] == "PENDING")
+
+    return {
+        "date":    req.date,
+        "scored":  scored,
+        "summary": {"total": len(scored), "wins": wins, "losses": losses, "pending": pending},
+    }
+
+
+@router.get("/backtest/history")
+async def get_backtest_history():
+    """Return all backtest sessions grouped by date with win/loss totals."""
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM backtest_picks ORDER BY session_date DESC, saved_at"
+        ).fetchall()
+
+    picks = [dict(r) for r in rows]
+
+    if not picks:
+        return {
+            "sessions": [],
+            "totals": {"total": 0, "wins": 0, "losses": 0, "pending": 0, "win_rate": None},
+        }
+
+    by_date: dict = defaultdict(list)
+    for p in picks:
+        by_date[p["session_date"]].append(p)
+
+    sessions = []
+    for d in sorted(by_date.keys(), reverse=True):
+        day_picks = by_date[d]
+        wins    = sum(1 for p in day_picks if p["result"] == "WIN")
+        losses  = sum(1 for p in day_picks if p["result"] == "LOSS")
+        pending = sum(1 for p in day_picks if p["result"] == "PENDING")
+        sessions.append({"date": d, "picks": day_picks, "wins": wins, "losses": losses, "pending": pending})
+
+    total_wins     = sum(1 for p in picks if p["result"] == "WIN")
+    total_losses   = sum(1 for p in picks if p["result"] == "LOSS")
+    total_pending  = sum(1 for p in picks if p["result"] == "PENDING")
+    total_resolved = total_wins + total_losses
+    win_rate       = round(total_wins / total_resolved, 4) if total_resolved > 0 else None
+
+    return {
+        "sessions": sessions,
+        "totals": {
+            "total":    len(picks),
+            "wins":     total_wins,
+            "losses":   total_losses,
+            "pending":  total_pending,
             "win_rate": win_rate,
         },
     }
