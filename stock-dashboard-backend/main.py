@@ -1,19 +1,43 @@
 from dotenv import load_dotenv
 load_dotenv()
 
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-import yfinance as yf
-import logging
-import requests as req_lib
-import sqlite3
+import re
 import os
+import sqlite3
+import logging
 from datetime import datetime
+
+from fastapi import FastAPI, HTTPException, Depends, Request, Path
+from fastapi.security import APIKeyHeader
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, field_validator
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+import yfinance as yf
+import requests as req_lib
+
 from nhl_router import router as nhl_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# ─── Auth ─────────────────────────────────────────────────────────────────────
+
+API_TOKEN = os.getenv("API_TOKEN", "")
+_api_key_header = APIKeyHeader(name="X-API-Token", auto_error=False)
+
+
+def verify_token(key: str | None = Depends(_api_key_header)):
+    """Require X-API-Token header when API_TOKEN is set in the environment."""
+    if API_TOKEN and key != API_TOKEN:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+# ─── Rate limiting ────────────────────────────────────────────────────────────
+
+limiter = Limiter(key_func=get_remote_address, default_limits=["120/minute"])
 
 # ─── Database ─────────────────────────────────────────────────────────────────
 
@@ -40,13 +64,20 @@ def init_db():
 
 init_db()
 
-app = FastAPI(title="Stock Dashboard API", version="1.0.0")
+app = FastAPI(
+    title="Stock Dashboard API",
+    version="1.0.0",
+    dependencies=[Depends(verify_token)],
+)
 app.include_router(nhl_router)
+
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -57,6 +88,15 @@ TIMEFRAME_MAP = {
     "6m":  {"period": "6mo",  "interval": "1d"},
     "1y":  {"period": "1y",   "interval": "1d"},
 }
+
+_TICKER_PATTERN = re.compile(r'^[A-Za-z0-9.\-]{1,20}$')
+
+
+def _validate_ticker_param(ticker: str) -> str:
+    """Raise 400 if the ticker path param contains unexpected characters."""
+    if not _TICKER_PATTERN.match(ticker):
+        raise HTTPException(status_code=400, detail="Invalid ticker symbol")
+    return ticker.upper()
 
 
 def fetch_stock_data(ticker: str, period: str, interval: str) -> list:
@@ -69,7 +109,7 @@ def fetch_stock_data(ticker: str, period: str, interval: str) -> list:
             raise ValueError(f"No data returned for ticker '{ticker}'")
 
         df = df.reset_index()
-        is_intraday = interval == "5m"  # only true intraday interval we use
+        is_intraday = interval == "5m"
         date_col = "Datetime" if is_intraday else "Date"
         if is_intraday:
             df[date_col] = df[date_col].dt.strftime("%Y-%m-%dT%H:%M")
@@ -99,9 +139,9 @@ def root():
 
 
 @app.get("/search/{ticker}")
-def search_ticker(ticker: str):
+def search_ticker(ticker: str = Path(..., max_length=20)):
     """Return basic company info for a ticker symbol."""
-    sym = ticker.upper()
+    sym = _validate_ticker_param(ticker)
     try:
         tk = yf.Ticker(sym)
 
@@ -137,22 +177,23 @@ def search_ticker(ticker: str):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"/search/{sym}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch ticker info")
 
 
 @app.get("/fundamentals/{ticker}")
-def get_fundamentals(ticker: str):
+def get_fundamentals(ticker: str = Path(..., max_length=20)):
     """Return PE ratios, dividend yield, rate, dates, and payment history."""
-    sym = ticker.upper()
+    sym = _validate_ticker_param(ticker)
     try:
         tk = yf.Ticker(sym)
         info = tk.info or {}
 
         trailing_pe    = info.get("trailingPE")
         forward_pe     = info.get("forwardPE")
-        dividend_yield = info.get("dividendYield")   # decimal, e.g. 0.0245
-        dividend_rate  = info.get("dividendRate")    # annual $ per share
-        ex_div_ts      = info.get("exDividendDate")  # unix timestamp
+        dividend_yield = info.get("dividendYield")
+        dividend_rate  = info.get("dividendRate")
+        ex_div_ts      = info.get("exDividendDate")
         last_div_value = info.get("lastDividendValue")
         last_div_ts    = info.get("lastDividendDate")
 
@@ -160,7 +201,6 @@ def get_fundamentals(ticker: str):
             try: return datetime.fromtimestamp(int(ts)).strftime("%Y-%m-%d")
             except Exception: return None
 
-        # Historical dividends — last 12 payments, most recent first
         div_history = []
         try:
             divs = tk.dividends
@@ -178,8 +218,6 @@ def get_fundamentals(ticker: str):
             "ticker":             sym,
             "trailing_pe":        round(float(trailing_pe), 2)     if trailing_pe    else None,
             "forward_pe":         round(float(forward_pe), 2)      if forward_pe     else None,
-            # yfinance inconsistently returns yield as decimal (0.0264) or pct (2.64)
-            # If value > 1 it's already a percentage; otherwise multiply by 100
             "dividend_yield":     round(float(dividend_yield) if float(dividend_yield) > 1 else float(dividend_yield)*100, 2) if dividend_yield else None,
             "dividend_rate":      round(float(dividend_rate), 4)   if dividend_rate  else None,
             "ex_dividend_date":   ts_to_date(ex_div_ts)            if ex_div_ts      else None,
@@ -188,25 +226,27 @@ def get_fundamentals(ticker: str):
             "dividend_history":   div_history,
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"/fundamentals/{sym}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch fundamentals")
 
 
 @app.get("/chart/{ticker}/{timeframe}")
-def get_chart_data(ticker: str, timeframe: str):
-    timeframe = timeframe.lower()
-    if timeframe not in TIMEFRAME_MAP:
+def get_chart_data(ticker: str = Path(..., max_length=20), timeframe: str = Path(..., max_length=10)):
+    sym = _validate_ticker_param(ticker)
+    tf = timeframe.lower()
+    if tf not in TIMEFRAME_MAP:
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid timeframe '{timeframe}'. Choose from: {list(TIMEFRAME_MAP.keys())}"
+            detail=f"Invalid timeframe '{tf}'. Choose from: {list(TIMEFRAME_MAP.keys())}"
         )
 
-    config = TIMEFRAME_MAP[timeframe]
+    config = TIMEFRAME_MAP[tf]
 
     try:
-        data = fetch_stock_data(ticker.upper(), config["period"], config["interval"])
+        data = fetch_stock_data(sym, config["period"], config["interval"])
         return {
-            "ticker":    ticker.upper(),
-            "timeframe": timeframe,
+            "ticker":    sym,
+            "timeframe": tf,
             "interval":  config["interval"],
             "count":     len(data),
             "data":      data,
@@ -215,11 +255,13 @@ def get_chart_data(ticker: str, timeframe: str):
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"/chart/{sym}/{tf}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch chart data")
 
 
 @app.get("/suggest/{query}")
-def suggest_tickers(query: str):
+@limiter.limit("20/minute")
+def suggest_tickers(request: Request, query: str = Path(..., max_length=100)):
     """Return ticker suggestions matching a search string."""
     try:
         url = "https://query1.finance.yahoo.com/v1/finance/search"
@@ -227,6 +269,8 @@ def suggest_tickers(query: str):
         headers = {"User-Agent": "Mozilla/5.0"}
         r = req_lib.get(url, params=params, headers=headers, timeout=5)
         r.raise_for_status()
+        if len(r.content) > 1 * 1024 * 1024:
+            raise ValueError("Response from Yahoo Finance was unexpectedly large")
         data = r.json()
         quotes = data.get("quotes", [])
         results = []
@@ -240,12 +284,28 @@ def suggest_tickers(query: str):
         return {"results": results}
     except Exception as e:
         logger.error(f"Suggest error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Autocomplete unavailable")
 
 
 class WatchlistItem(BaseModel):
     ticker: str
     name: str
+
+    @field_validator("ticker")
+    @classmethod
+    def validate_ticker(cls, v: str) -> str:
+        v = v.strip().upper()
+        if not re.match(r'^[A-Za-z0-9.\-]{1,20}$', v):
+            raise ValueError("Invalid ticker symbol")
+        return v
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, v: str) -> str:
+        v = v.strip()
+        if len(v) > 200:
+            raise ValueError("Name too long")
+        return v
 
 
 @app.get("/watchlist")
@@ -259,20 +319,19 @@ def get_watchlist():
 @app.post("/watchlist", status_code=201)
 def add_to_watchlist(item: WatchlistItem):
     """Add a ticker to the watchlist. Silently ignores duplicates."""
-    ticker = item.ticker.upper()
     with get_db() as conn:
         conn.execute(
             "INSERT OR IGNORE INTO watchlist (ticker, name) VALUES (?, ?)",
-            (ticker, item.name),
+            (item.ticker, item.name),
         )
         conn.commit()
-    return {"ticker": ticker, "name": item.name}
+    return {"ticker": item.ticker, "name": item.name}
 
 
 @app.delete("/watchlist/{ticker}", status_code=200)
-def remove_from_watchlist(ticker: str):
+def remove_from_watchlist(ticker: str = Path(..., max_length=20)):
     """Remove a ticker from the watchlist."""
-    sym = ticker.upper()
+    sym = _validate_ticker_param(ticker)
     with get_db() as conn:
         conn.execute("DELETE FROM watchlist WHERE ticker = ?", (sym,))
         conn.commit()
@@ -280,14 +339,14 @@ def remove_from_watchlist(ticker: str):
 
 
 @app.get("/chart/{ticker}/all")
-def get_all_timeframes(ticker: str):
+def get_all_timeframes(ticker: str = Path(..., max_length=20)):
+    sym = _validate_ticker_param(ticker)
     results = {}
     for timeframe, config in TIMEFRAME_MAP.items():
         try:
-            results[timeframe] = fetch_stock_data(
-                ticker.upper(), config["period"], config["interval"]
-            )
+            results[timeframe] = fetch_stock_data(sym, config["period"], config["interval"])
         except Exception as e:
-            results[timeframe] = {"error": str(e)}
+            logger.error(f"/chart/{sym}/all [{timeframe}]: {e}")
+            results[timeframe] = {"error": "Failed to fetch data"}
 
-    return {"ticker": ticker.upper(), "charts": results}
+    return {"ticker": sym, "charts": results}

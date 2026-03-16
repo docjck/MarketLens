@@ -3,6 +3,8 @@
 import { useState, useEffect } from "react";
 
 const API_BASE = "/api";
+const API_TOKEN = import.meta.env.VITE_API_TOKEN || "";
+const apiHeaders = () => API_TOKEN ? { "X-API-Token": API_TOKEN } : {};
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -442,7 +444,7 @@ export default function NHLPredictor() {
   useEffect(() => {
     // Fetch today's predictions
     setLoading(true);
-    fetch(`${API_BASE}/nhl/predictions`)
+    fetch(`${API_BASE}/nhl/predictions`, { headers: apiHeaders() })
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
       .then(json => { if (json.error) throw new Error(json.error); setData(json); })
       .catch(e => setError(e.message))
@@ -450,7 +452,7 @@ export default function NHLPredictor() {
 
     // Fetch edge history
     setHistLoading(true);
-    fetch(`${API_BASE}/nhl/edge-history`)
+    fetch(`${API_BASE}/nhl/edge-history`, { headers: apiHeaders() })
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
       .then(json => setHistData(json))
       .catch(e => setHistError(e.message))

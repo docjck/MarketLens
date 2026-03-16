@@ -166,50 +166,51 @@ async def get_predictions():
         odds_error  = None
         if ODDS_API_KEY:
             try:
-                # Build URL manually to avoid httpx percent-encoding the comma in markets
-                odds_url = (
-                    f"{ODDS_BASE}/sports/icehockey_nhl/odds/"
-                    f"?apiKey={ODDS_API_KEY}&regions=us&markets=h2h,totals&oddsFormat=american"
+                resp = await client.get(
+                    f"{ODDS_BASE}/sports/icehockey_nhl/odds/",
+                    params={"apiKey": ODDS_API_KEY, "regions": "us", "markets": "h2h,totals", "oddsFormat": "american"},
                 )
-                resp = await client.get(odds_url)
                 if resp.status_code == 200:
-                    for event in resp.json():
-                        e_home = event.get("home_team", "")
-                        e_away = event.get("away_team", "")
-                        key    = f"{e_home}|{e_away}"
-                        # Search all bookmakers for each market — the first bookmaker
-                        # may offer h2h but not totals (or vice versa)
-                        h2h_done = totals_done = False
-                        for book in event.get("bookmakers", []):
-                            if h2h_done and totals_done:
-                                break
-                            for market in book.get("markets", []):
-                                if not h2h_done and market["key"] == "h2h":
-                                    mls = {o["name"]: o["price"] for o in market["outcomes"]}
-                                    odds_lookup[key] = {
-                                        "home_team": e_home,
-                                        "away_team": e_away,
-                                        "home_ml":   mls.get(e_home),
-                                        "away_ml":   mls.get(e_away),
-                                    }
-                                    h2h_done = True
-                                elif not totals_done and market["key"] == "totals":
-                                    pts = {o["name"]: o for o in market["outcomes"]}
-                                    over  = pts.get("Over", {})
-                                    under = pts.get("Under", {})
-                                    if over.get("point") is not None:
-                                        ou_lookup[key] = {
+                    if len(resp.content) > 5 * 1024 * 1024:
+                        odds_error = "Odds API response was unexpectedly large"
+                    else:
+                        for event in resp.json():
+                            e_home = event.get("home_team", "")
+                            e_away = event.get("away_team", "")
+                            key    = f"{e_home}|{e_away}"
+                            # Search all bookmakers for each market — the first bookmaker
+                            # may offer h2h but not totals (or vice versa)
+                            h2h_done = totals_done = False
+                            for book in event.get("bookmakers", []):
+                                if h2h_done and totals_done:
+                                    break
+                                for market in book.get("markets", []):
+                                    if not h2h_done and market["key"] == "h2h":
+                                        mls = {o["name"]: o["price"] for o in market["outcomes"]}
+                                        odds_lookup[key] = {
                                             "home_team": e_home,
                                             "away_team": e_away,
-                                            "line":      over["point"],
-                                            "over_ml":   over.get("price"),
-                                            "under_ml":  under.get("price"),
+                                            "home_ml":   mls.get(e_home),
+                                            "away_ml":   mls.get(e_away),
                                         }
-                                        totals_done = True
+                                        h2h_done = True
+                                    elif not totals_done and market["key"] == "totals":
+                                        pts = {o["name"]: o for o in market["outcomes"]}
+                                        over  = pts.get("Over", {})
+                                        under = pts.get("Under", {})
+                                        if over.get("point") is not None:
+                                            ou_lookup[key] = {
+                                                "home_team": e_home,
+                                                "away_team": e_away,
+                                                "line":      over["point"],
+                                                "over_ml":   over.get("price"),
+                                                "under_ml":  under.get("price"),
+                                            }
+                                            totals_done = True
                 else:
-                    odds_error = f"Odds API {resp.status_code}: {resp.text[:200]}"
+                    odds_error = f"Odds API returned status {resp.status_code}"
             except Exception as e:
-                odds_error = str(e)
+                odds_error = "Failed to fetch odds data"
 
         # 4. Build predictions per game
         results = []

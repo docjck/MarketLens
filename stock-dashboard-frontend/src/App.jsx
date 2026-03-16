@@ -7,6 +7,11 @@ import {
 
 const API_BASE = "/api";
 const WATCHLIST_KEY = "marketlens_watchlist";
+const API_TOKEN = import.meta.env.VITE_API_TOKEN || "";
+
+function apiHeaders(extra = {}) {
+  return API_TOKEN ? { "X-API-Token": API_TOKEN, ...extra } : { ...extra };
+}
 
 // ─── Utility ─────────────────────────────────────────────────────────────────
 
@@ -759,7 +764,7 @@ export default function App() {
 
   // Load watchlist from backend on mount
   useEffect(() => {
-    fetch(`${API_BASE}/watchlist`)
+    fetch(`${API_BASE}/watchlist`, { headers: apiHeaders() })
       .then(r => r.ok ? r.json() : null)
       .then(json => { if (json?.items?.length) setWatchlist(json.items); })
       .catch(() => { /* keep localStorage fallback */ });
@@ -770,7 +775,7 @@ export default function App() {
     const timer = setTimeout(async () => {
       setLoadingSuggest(true);
       try {
-        const res = await fetch(`${API_BASE}/suggest/${encodeURIComponent(query)}`);
+        const res = await fetch(`${API_BASE}/suggest/${encodeURIComponent(query)}`, { headers: apiHeaders() });
         if (res.ok) {
           const json = await res.json();
           setSuggestions(json.results || []);
@@ -787,7 +792,7 @@ export default function App() {
     setLoadingChart(true);
     setChartError(null);
     try {
-      const res = await fetch(`${API_BASE}/chart/${sym}/${tf}`);
+      const res = await fetch(`${API_BASE}/chart/${sym}/${tf}`, { headers: apiHeaders() });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.detail || `No chart data for ${sym} (${tf.toUpperCase()})`);
@@ -811,7 +816,7 @@ export default function App() {
     setFundamentals(null);
     setLoadingFundamentals(true);
     try {
-      const res = await fetch(`${API_BASE}/search/${sym}`);
+      const res = await fetch(`${API_BASE}/search/${sym}`, { headers: apiHeaders() });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.detail || `Ticker "${sym}" not found`);
@@ -821,7 +826,7 @@ export default function App() {
       setTicker(sym);
       setTimeframe("6m");
       // Fetch fundamentals in parallel — don't block chart load
-      fetch(`${API_BASE}/fundamentals/${sym}`)
+      fetch(`${API_BASE}/fundamentals/${sym}`, { headers: apiHeaders() })
         .then(r => r.ok ? r.json() : null)
         .then(f => setFundamentals(f))
         .catch(() => {})
@@ -868,7 +873,7 @@ export default function App() {
     try {
       await fetch(`${API_BASE}/watchlist`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: apiHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify(item),
       });
     } catch { /* localStorage still updated above */ }
@@ -877,7 +882,7 @@ export default function App() {
   const handleRemoveFromWatchlist = async (sym) => {
     setWatchlist(prev => prev.filter(w => w.ticker !== sym));
     try {
-      await fetch(`${API_BASE}/watchlist/${sym}`, { method: "DELETE" });
+      await fetch(`${API_BASE}/watchlist/${sym}`, { method: "DELETE", headers: apiHeaders() });
     } catch { /* localStorage still updated above */ }
   };
 
