@@ -792,7 +792,7 @@ export default function App() {
     setLoadingChart(true);
     setChartError(null);
     try {
-      const res = await fetch(`${API_BASE}/chart/${sym}/${tf}`, { headers: apiHeaders() });
+      const res = await fetch(`${API_BASE}/chart/${encodeURIComponent(sym)}/${tf}`, { headers: apiHeaders() });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.detail || `No chart data for ${sym} (${tf.toUpperCase()})`);
@@ -816,7 +816,7 @@ export default function App() {
     setFundamentals(null);
     setLoadingFundamentals(true);
     try {
-      const res = await fetch(`${API_BASE}/search/${sym}`, { headers: apiHeaders() });
+      const res = await fetch(`${API_BASE}/search/${encodeURIComponent(sym)}`, { headers: apiHeaders() });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.detail || `Ticker "${sym}" not found`);
@@ -826,7 +826,7 @@ export default function App() {
       setTicker(sym);
       setTimeframe("6m");
       // Fetch fundamentals in parallel — don't block chart load
-      fetch(`${API_BASE}/fundamentals/${sym}`, { headers: apiHeaders() })
+      fetch(`${API_BASE}/fundamentals/${encodeURIComponent(sym)}`, { headers: apiHeaders() })
         .then(r => r.ok ? r.json() : null)
         .then(f => setFundamentals(f))
         .catch(() => {})

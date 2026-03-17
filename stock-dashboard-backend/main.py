@@ -3,6 +3,7 @@ load_dotenv()
 
 import re
 import os
+from urllib.parse import unquote
 import sqlite3
 import logging
 from datetime import datetime
@@ -89,11 +90,12 @@ TIMEFRAME_MAP = {
     "1y":  {"period": "1y",   "interval": "1d"},
 }
 
-_TICKER_PATTERN = re.compile(r'^[A-Za-z0-9.\-]{1,20}$')
+_TICKER_PATTERN = re.compile(r'^[\^A-Za-z0-9.\-=]{1,20}$')
 
 
 def _validate_ticker_param(ticker: str) -> str:
     """Raise 400 if the ticker path param contains unexpected characters."""
+    ticker = unquote(ticker)
     if not _TICKER_PATTERN.match(ticker):
         raise HTTPException(status_code=400, detail="Invalid ticker symbol")
     return ticker.upper()
@@ -295,7 +297,7 @@ class WatchlistItem(BaseModel):
     @classmethod
     def validate_ticker(cls, v: str) -> str:
         v = v.strip().upper()
-        if not re.match(r'^[A-Za-z0-9.\-]{1,20}$', v):
+        if not re.match(r'^[\^A-Za-z0-9.\-=]{1,20}$', v):
             raise ValueError("Invalid ticker symbol")
         return v
 
