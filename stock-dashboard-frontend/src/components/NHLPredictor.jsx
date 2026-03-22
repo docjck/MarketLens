@@ -692,6 +692,15 @@ function BacktestHistoryRow({ pick }) {
         <div style={{ fontSize: 9, color: "#334155", marginTop: 2, letterSpacing: 1 }}>
           MODEL {pct(pick.picked_team === "home" ? pick.model_h_prob : pick.model_a_prob)}
         </div>
+        {pick.unit_result != null && (
+          <div style={{
+            fontSize: 10, marginTop: 1, letterSpacing: 0.5,
+            fontFamily: "'IBM Plex Mono', monospace",
+            color: pick.unit_result > 0 ? "#00ff88" : "#ef4444",
+          }}>
+            {pick.unit_result > 0 ? "+" : ""}{pick.unit_result.toFixed(2)}u
+          </div>
+        )}
       </div>
     </div>
   );
@@ -718,6 +727,11 @@ function BacktestHistorySession({ session }) {
           {session.losses > 0 && <span style={{ color: "#ef4444" }}>{session.losses}L</span>}
           {session.pending > 0 && <span style={{ color: "#475569" }}>{session.pending} pending</span>}
           {winRate && <span style={{ color: "#94a3b8" }}>{winRate}</span>}
+          {session.net_units != null && (
+            <span style={{ color: session.net_units >= 0 ? "#00ff88" : "#ef4444" }}>
+              {session.net_units > 0 ? "+" : ""}{session.net_units.toFixed(2)}u
+            </span>
+          )}
         </span>
       </button>
       {open && (
@@ -757,6 +771,16 @@ function BacktestHistoryPanel({ data, loading, error }) {
           { label: "WIN RATE",    value: winRatePct,    color: totals.win_rate != null
               ? totals.win_rate >= 0.6 ? "#00ff88" : totals.win_rate >= 0.45 ? "#f59e0b" : "#ef4444"
               : "#475569" },
+          { label: "UNITS RISKED", value: totals.units_risked ?? "—", color: "#e2e8f0" },
+          {
+            label: "NET UNITS",
+            value: totals.net_units != null
+              ? `${totals.net_units > 0 ? "+" : ""}${totals.net_units.toFixed(2)}u`
+              : "—",
+            color: totals.net_units != null
+              ? totals.net_units > 0 ? "#00ff88" : totals.net_units < 0 ? "#ef4444" : "#e2e8f0"
+              : "#475569",
+          },
         ].map(({ label, value, color }) => (
           <div key={label}>
             <div style={{ fontSize: 9, color: "#334155", letterSpacing: 2, marginBottom: 4 }}>{label}</div>
@@ -764,6 +788,7 @@ function BacktestHistoryPanel({ data, loading, error }) {
           </div>
         ))}
       </div>
+      <PLChart data={data?.cumulative_units} />
       {sessions.length === 0 ? (
         <div style={{ textAlign: "center", padding: "48px 24px", fontFamily: "'IBM Plex Mono', monospace", fontSize: 13, color: "#334155", letterSpacing: 2 }}>
           NO BACKTEST SESSIONS YET
