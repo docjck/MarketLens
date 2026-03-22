@@ -76,3 +76,27 @@ def test_backtest_table_has_ml_columns(monkeypatch):
         import gc
         gc.collect()
         os.unlink(tmp)
+
+
+def test_backtest_table_migration_adds_ml_columns(monkeypatch, tmp_path):
+    """ALTER TABLE migration path: existing DB without ML columns gets them added."""
+    import sqlite3
+    tmp = str(tmp_path / "test_migrate.db")
+    # Pre-populate with old schema (no home_ml/away_ml)
+    with sqlite3.connect(tmp) as conn:
+        conn.execute("""
+            CREATE TABLE backtest_picks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_date TEXT NOT NULL,
+                game_id INTEGER NOT NULL,
+                result TEXT NOT NULL DEFAULT 'PENDING',
+                UNIQUE(session_date, game_id)
+            )
+        """)
+    import nhl_router
+    monkeypatch.setattr(nhl_router, "DB_PATH", tmp)
+    nhl_router.init_backtest_table()
+    with sqlite3.connect(tmp) as conn:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(backtest_picks)").fetchall()]
+    assert "home_ml" in cols
+    assert "away_ml" in cols

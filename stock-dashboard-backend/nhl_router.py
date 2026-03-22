@@ -85,7 +85,7 @@ def init_backtest_table():
         for col in ("home_ml", "away_ml"):
             try:
                 conn.execute(f"ALTER TABLE backtest_picks ADD COLUMN {col} INTEGER")
-            except Exception:
+            except sqlite3.OperationalError:
                 pass
         conn.commit()
 
