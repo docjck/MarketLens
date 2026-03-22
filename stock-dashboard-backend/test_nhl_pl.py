@@ -122,3 +122,28 @@ def test_parse_historical_odds_lookup():
                     lookup[key] = {"home_ml": mls.get(e_home), "away_ml": mls.get(e_away)}
     assert lookup["Colorado Avalanche|Dallas Stars"]["home_ml"] == -150
     assert lookup["Colorado Avalanche|Dallas Stars"]["away_ml"] == 130
+
+
+def test_backtest_pick_accepts_ml_fields():
+    from nhl_router import BacktestPick
+    pick = BacktestPick(
+        game_id=1, picked_team="home",
+        home_name="Colorado Avalanche", away_name="Dallas Stars",
+        home_abbrev="COL", away_abbrev="DAL",
+        model_home_prob=0.62, model_away_prob=0.38,
+        home_ml=-155, away_ml=130,
+    )
+    assert pick.home_ml == -155
+    assert pick.away_ml == 130
+
+
+def test_backtest_pick_ml_optional():
+    from nhl_router import BacktestPick
+    pick = BacktestPick(
+        game_id=1, picked_team="home",
+        home_name="Colorado Avalanche", away_name="Dallas Stars",
+        home_abbrev="COL", away_abbrev="DAL",
+        model_home_prob=0.62, model_away_prob=0.38,
+    )
+    assert pick.home_ml is None
+    assert pick.away_ml is None

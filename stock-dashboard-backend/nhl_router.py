@@ -198,6 +198,8 @@ class BacktestPick(BaseModel):
     away_abbrev: str
     model_home_prob: float
     model_away_prob: float
+    home_ml: int | None = None
+    away_ml: int | None = None
 
     @field_validator("picked_team")
     @classmethod
@@ -346,3 +348,111 @@ async def get_backtest_games(date: str = Path(..., pattern=r"^\d{4}-\d{2}-\d{2}$
         results.sort(key=lambda x: x["confidence"], reverse=True)
 
         return {"date": date, "game_count": len(results), "games": results}
+
+
+@router.post("/backtest/score")
+async def score_backtest(req: BacktestScoreRequest):
+    """
+    Score a backtest session.
+    Accept picks with model probs and optional ML odds.
+    Fetch actual game results from NHL API and compute unit P&L.
+    Store in backtest_picks table and return scored picks.
+    """
+    try:
+        req_dt = date_type.fromisoformat(req.date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format")
+
+    if not req.picks:
+        raise HTTPException(status_code=400, detail="No picks to score")
+
+    async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+        # Fetch schedule for the date
+        try:
+            resp = await client.get(f"{NHL_BASE}/schedule/{req.date}")
+            resp.raise_for_status()
+            schedule = resp.json()
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to fetch schedule: {e}")
+
+        # Build a lookup of game_id -> score
+        games_by_id = {}
+        for week in schedule.get("gameWeek", []):
+            for g in week.get("games", []):
+                if g.get("gameType") == 2:
+                    games_by_id[g.get("id")] = {
+                        "home_score": g.get("homeTeam", {}).get("score", 0),
+                        "away_score": g.get("awayTeam", {}).get("score", 0),
+                    }
+
+    # Score each pick
+    scored = []
+    with get_db() as conn:
+        for pick in req.picks:
+            game_id = pick.game_id
+            if game_id not in games_by_id:
+                continue
+
+            game = games_by_id[game_id]
+            home_score = game["home_score"]
+            away_score = game["away_score"]
+
+            # Determine winner
+            if home_score > away_score:
+                actual_winner = "home"
+            elif away_score > home_score:
+                actual_winner = "away"
+            else:
+                actual_winner = None  # Tie or no score
+
+            # Determine result
+            if actual_winner is None:
+                result = "PENDING"
+            elif actual_winner == pick.picked_team:
+                result = "WIN"
+            else:
+                result = "LOSS"
+
+            # Compute unit result
+            picked_ml = pick.home_ml if pick.picked_team == "home" else pick.away_ml
+            model_prob = pick.model_home_prob if pick.picked_team == "home" else pick.model_away_prob
+            unit_result = ml_to_units(picked_ml, result, model_prob=model_prob)
+
+            # Store in database
+            conn.execute("""
+                INSERT OR REPLACE INTO backtest_picks
+                    (session_date, game_id, home_name, away_name, home_abbrev, away_abbrev,
+                     picked_team, model_h_prob, model_a_prob, actual_winner,
+                     home_score, away_score, home_ml, away_ml, result)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                req.date, pick.game_id, pick.home_name, pick.away_name,
+                pick.home_abbrev, pick.away_abbrev,
+                pick.picked_team, pick.model_home_prob, pick.model_away_prob,
+                actual_winner, home_score, away_score,
+                pick.home_ml, pick.away_ml, result,
+            ))
+
+            # Add to response
+            scored.append({
+                "game_id":       pick.game_id,
+                "home_name":     pick.home_name,
+                "away_name":     pick.away_name,
+                "picked_team":   pick.picked_team,
+                "model_prob":    model_prob,
+                "actual_winner": actual_winner,
+                "home_score":    home_score,
+                "away_score":    away_score,
+                "result":        result,
+                "home_ml":       pick.home_ml,
+                "away_ml":       pick.away_ml,
+                "unit_result":   unit_result,
+            })
+
+        conn.commit()
+
+    return {
+        "date": req.date,
+        "picks_scored": len(scored),
+        "scored": scored,
+    }
