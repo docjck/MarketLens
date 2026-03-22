@@ -583,3 +583,87 @@ async def get_edge_history():
             "net_units":    total_units,
         },
     }
+
+
+@router.get("/backtest/history")
+async def get_backtest_history():
+    """
+    Return all saved backtest picks grouped by session date, with unit P&L annotations.
+    """
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT session_date, game_id, home_abbrev, away_abbrev, home_name, away_name, "
+            "picked_team, model_h_prob, model_a_prob, actual_winner, result, "
+            "home_score, away_score, home_ml, away_ml "
+            "FROM backtest_picks ORDER BY session_date DESC"
+        ).fetchall()
+
+    picks = [dict(r) for r in rows]
+
+    # ── Compute summary totals ───────────────────────────────────────────────
+    total_wins    = sum(1 for p in picks if p["result"] == "WIN")
+    total_losses  = sum(1 for p in picks if p["result"] == "LOSS")
+    total_pending = sum(1 for p in picks if p["result"] == "PENDING")
+    total         = len(picks)
+    win_rate      = round(total_wins / (total_wins + total_losses), 4) if (total_wins + total_losses) > 0 else None
+
+    # ── Group by session date ────────────────────────────────────────────────
+    by_date: dict = {}
+    for p in picks:
+        d = p["session_date"]
+        if d not in by_date:
+            by_date[d] = []
+        by_date[d].append(p)
+
+    sessions = [
+        {
+            "session_date": d,
+            "picks":        by_date[d],
+            "wins":         sum(1 for p in by_date[d] if p["result"] == "WIN"),
+            "losses":       sum(1 for p in by_date[d] if p["result"] == "LOSS"),
+            "pending":      sum(1 for p in by_date[d] if p["result"] == "PENDING"),
+        }
+        for d in sorted(by_date.keys(), reverse=True)
+    ]
+
+    # ── Unit P&L per pick + cumulative series ────────────────────────────────
+    all_unit_results = []
+    for session in sessions:
+        sess_units = 0.0
+        for p in session["picks"]:
+            picked_ml = p["home_ml"] if p["picked_team"] == "home" else p["away_ml"]
+            model_prob = p["model_h_prob"] if p["picked_team"] == "home" else p["model_a_prob"]
+            ur = ml_to_units(picked_ml, p["result"], model_prob=model_prob)
+            p["unit_result"] = ur
+            if ur is not None:
+                sess_units = round(sess_units + ur, 4)
+                all_unit_results.append({"date": p["session_date"], "units": ur})
+        session["net_units"] = sess_units
+
+    all_unit_results.sort(key=lambda x: x["date"])
+    cumulative_units = []
+    running = 0.0
+    for entry in all_unit_results:
+        running = round(running + entry["units"], 4)
+        cumulative_units.append({"date": entry["date"], "cumulative": running})
+
+    total_units = round(sum(
+        p["unit_result"]
+        for sess in sessions for p in sess["picks"]
+        if p.get("unit_result") is not None
+    ), 4)
+    total_units_risked = sum(1 for p in picks if p["result"] in ("WIN", "LOSS"))
+
+    return {
+        "sessions":         sessions,
+        "cumulative_units": cumulative_units,
+        "totals": {
+            "total":        total,
+            "wins":         total_wins,
+            "losses":       total_losses,
+            "pending":      total_pending,
+            "win_rate":     win_rate,
+            "units_risked": total_units_risked,
+            "net_units":    total_units,
+        },
+    }
