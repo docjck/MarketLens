@@ -542,7 +542,11 @@ function BacktestGameCard({ game, picks, setPicks, scored }) {
     if (scoreData) return;
     setPicks(prev => {
       const next = { ...prev };
-      if (next[gid] === side) { delete next[gid]; } else { next[gid] = side; }
+      if (next[gid]?.side === side) {
+        delete next[gid];
+      } else {
+        next[gid] = { side, home_ml: game.home_ml ?? null, away_ml: game.away_ml ?? null };
+      }
       return next;
     });
   };
@@ -630,7 +634,7 @@ function BacktestGameCard({ game, picks, setPicks, scored }) {
       {!scoreData && (
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
           {(["away", "home"]).map(side => {
-            const selected = pick === side;
+            const selected = pick?.side === side;
             const abbrev   = side === "away" ? game.away_abbrev : game.home_abbrev;
             return (
               <button key={side} onClick={() => togglePick(side)} style={{
@@ -651,8 +655,8 @@ function BacktestGameCard({ game, picks, setPicks, scored }) {
       {/* After scoring: show which team was picked */}
       {scoreData && pick && (
         <div style={{ display: "flex", justifyContent: "space-between", fontFamily: "'IBM Plex Mono', monospace", fontSize: 10, color: "#475569" }}>
-          <span>PICKED: <span style={{ color: "#94a3b8" }}>{pick === "home" ? game.home_name : game.away_name}</span></span>
-          <span style={{ color: "#334155" }}>MODEL {pct(pick === "home" ? game.model_home_prob : game.model_away_prob)}</span>
+          <span>PICKED: <span style={{ color: "#94a3b8" }}>{pick?.side === "home" ? game.home_name : game.away_name}</span></span>
+          <span style={{ color: "#334155" }}>MODEL {pct(pick?.side === "home" ? game.model_home_prob : game.model_away_prob)}</span>
         </div>
       )}
     </div>
@@ -851,15 +855,21 @@ export default function NHLPredictor() {
 
   const scoreBtPicks = async () => {
     const picks = Object.entries(btPicks)
-      .filter(([, side]) => side !== undefined)
-      .map(([gid, side]) => {
+      .filter(([, pickData]) => pickData !== undefined)
+      .map(([gid, pickData]) => {
         const g = btGames.find(g => g.game_id === parseInt(gid));
         if (!g) return null;
         return {
-          game_id: g.game_id, picked_team: side,
-          home_name: g.home_name, away_name: g.away_name,
-          home_abbrev: g.home_abbrev, away_abbrev: g.away_abbrev,
-          model_home_prob: g.model_home_prob, model_away_prob: g.model_away_prob,
+          game_id:         parseInt(gid),
+          picked_team:     pickData.side,
+          home_name:       g.home_name,
+          away_name:       g.away_name,
+          home_abbrev:     g.home_abbrev,
+          away_abbrev:     g.away_abbrev,
+          model_home_prob: g.model_home_prob,
+          model_away_prob: g.model_away_prob,
+          home_ml:         pickData.home_ml,
+          away_ml:         pickData.away_ml,
         };
       }).filter(Boolean);
     if (!picks.length) return;
