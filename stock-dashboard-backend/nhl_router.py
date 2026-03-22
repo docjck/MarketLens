@@ -100,14 +100,22 @@ def ml_to_units(ml: int | None, result: str, model_prob: float | None = None) ->
         return None
     if result == "LOSS":
         return -1.0
-    # result == "WIN"
+    # Only process WIN result; unknown results return None
+    if result != "WIN":
+        return None
+    # WIN result with moneyline payout
     if ml is not None:
+        # Guard against zero moneyline
+        if ml == 0:
+            return None
         if ml > 0:
             return round(ml / 100, 4)
         else:
             return round(100 / abs(ml), 4)
     # Fallback: fair-value payout from model probability
-    if model_prob and 0 < model_prob < 1:
+    # Clamp model_prob to [0.20, 0.80] to avoid extreme payouts
+    if model_prob is not None and 0 < model_prob < 1:
+        model_prob = max(0.20, min(0.80, model_prob))
         return round((1 - model_prob) / model_prob, 4)
     return None
 

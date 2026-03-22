@@ -26,3 +26,10 @@ def test_fallback_model_prob():
 def test_fallback_loss():
     result = ml_to_units(None, "LOSS", model_prob=0.60)
     assert result == -1.0
+
+def test_invalid_ml_zero():
+    assert ml_to_units(0, "WIN") is None
+
+def test_unknown_result():
+    assert ml_to_units(-140, "UNKNOWN") is None
+    assert ml_to_units(-140, "") is None
