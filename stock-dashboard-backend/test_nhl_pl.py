@@ -43,3 +43,36 @@ def test_model_prob_clamped_low():
     # model_prob=0.10 is below 0.20 floor; should clamp to 0.20
     result = ml_to_units(None, "WIN", model_prob=0.10)
     assert abs(result - round(0.80 / 0.20, 4)) < 0.0001
+
+
+def test_backtest_table_has_ml_columns(monkeypatch):
+    import sqlite3
+    import tempfile
+    import os
+
+    tmp = tempfile.mktemp(suffix=".db")
+
+    # Import the module
+    import nhl_router
+
+    # Patch the DB_PATH before calling init
+    monkeypatch.setattr(nhl_router, "DB_PATH", tmp)
+
+    # Directly call the init function with the patched DB_PATH
+    nhl_router.init_backtest_table()
+
+    # Check the table
+    conn = sqlite3.connect(tmp)
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(backtest_picks)").fetchall()]
+    conn.close()
+
+    assert "home_ml" in cols, f"home_ml not in columns: {cols}"
+    assert "away_ml" in cols, f"away_ml not in columns: {cols}"
+
+    # Try to delete, with retry on Windows
+    try:
+        os.unlink(tmp)
+    except PermissionError:
+        import gc
+        gc.collect()
+        os.unlink(tmp)

@@ -58,7 +58,40 @@ def init_edge_picks():
         conn.commit()
 
 
+def init_backtest_table():
+    with get_db() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS backtest_picks (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_date  TEXT NOT NULL,
+                game_id       INTEGER NOT NULL,
+                home_name     TEXT NOT NULL,
+                away_name     TEXT NOT NULL,
+                home_abbrev   TEXT NOT NULL,
+                away_abbrev   TEXT NOT NULL,
+                picked_team   TEXT NOT NULL,
+                model_h_prob  REAL,
+                model_a_prob  REAL,
+                actual_winner TEXT,
+                home_score    INTEGER,
+                away_score    INTEGER,
+                home_ml       INTEGER,
+                away_ml       INTEGER,
+                result        TEXT NOT NULL DEFAULT 'PENDING',
+                saved_at      TEXT DEFAULT (datetime('now')),
+                UNIQUE(session_date, game_id)
+            )
+        """)
+        for col in ("home_ml", "away_ml"):
+            try:
+                conn.execute(f"ALTER TABLE backtest_picks ADD COLUMN {col} INTEGER")
+            except Exception:
+                pass
+        conn.commit()
+
+
 init_edge_picks()
+init_backtest_table()
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
