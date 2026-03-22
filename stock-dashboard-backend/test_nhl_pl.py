@@ -100,3 +100,25 @@ def test_backtest_table_migration_adds_ml_columns(monkeypatch, tmp_path):
         cols = [r[1] for r in conn.execute("PRAGMA table_info(backtest_picks)").fetchall()]
     assert "home_ml" in cols
     assert "away_ml" in cols
+
+
+def test_parse_historical_odds_lookup():
+    mock_data = [{
+        "home_team": "Colorado Avalanche",
+        "away_team": "Dallas Stars",
+        "bookmakers": [{"markets": [{"key": "h2h", "outcomes": [
+            {"name": "Colorado Avalanche", "price": -150},
+            {"name": "Dallas Stars", "price": 130},
+        ]}]}]
+    }]
+    lookup = {}
+    for event in mock_data:
+        e_home, e_away = event["home_team"], event["away_team"]
+        key = f"{e_home}|{e_away}"
+        for book in event["bookmakers"]:
+            for market in book["markets"]:
+                if market["key"] == "h2h":
+                    mls = {o["name"]: o["price"] for o in market["outcomes"]}
+                    lookup[key] = {"home_ml": mls.get(e_home), "away_ml": mls.get(e_away)}
+    assert lookup["Colorado Avalanche|Dallas Stars"]["home_ml"] == -150
+    assert lookup["Colorado Avalanche|Dallas Stars"]["away_ml"] == 130
