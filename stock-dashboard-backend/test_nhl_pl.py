@@ -33,3 +33,13 @@ def test_invalid_ml_zero():
 def test_unknown_result():
     assert ml_to_units(-140, "UNKNOWN") is None
     assert ml_to_units(-140, "") is None
+
+def test_model_prob_clamped_high():
+    # model_prob=0.90 exceeds 0.80 ceiling; should clamp to 0.80
+    result = ml_to_units(None, "WIN", model_prob=0.90)
+    assert abs(result - round(0.20 / 0.80, 4)) < 0.0001
+
+def test_model_prob_clamped_low():
+    # model_prob=0.10 is below 0.20 floor; should clamp to 0.20
+    result = ml_to_units(None, "WIN", model_prob=0.10)
+    assert abs(result - round(0.80 / 0.20, 4)) < 0.0001
