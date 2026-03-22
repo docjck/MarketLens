@@ -1,6 +1,7 @@
 // NHLPredictor.jsx — NHL model predictions vs market odds
 
 import { useState, useEffect } from "react";
+import { LineChart, Line, XAxis, YAxis, Tooltip, ReferenceLine, ResponsiveContainer } from "recharts";
 
 const API_BASE = "/api";
 const API_TOKEN = import.meta.env.VITE_API_TOKEN || "";
@@ -373,6 +374,56 @@ function DaySection({ day }) {
           {day.picks.map(p => <HistoryPickRow key={p.game_id} pick={p} />)}
         </div>
       )}
+    </div>
+  );
+}
+
+// ─── P&L Chart ────────────────────────────────────────────────────────────────
+
+function PLChart({ data }) {
+  // data: [{ date: "2026-03-20", cumulative: 1.43 }, ...]
+  if (!data || data.length < 2) return null;
+
+  const netUnits = data[data.length - 1]?.cumulative ?? 0;
+  const color    = netUnits >= 0 ? "#00ff88" : "#ef4444";
+
+  return (
+    <div style={{ marginTop: 16 }}>
+      <div style={{
+        fontFamily: "'IBM Plex Mono', monospace", fontSize: 9,
+        color: "#334155", letterSpacing: 2, marginBottom: 8,
+      }}>
+        CUMULATIVE UNITS P&L
+      </div>
+      <ResponsiveContainer width="100%" height={120}>
+        <LineChart data={data} margin={{ top: 4, right: 8, bottom: 0, left: -20 }}>
+          <XAxis
+            dataKey="date"
+            tick={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 9, fill: "#334155" }}
+            axisLine={false} tickLine={false}
+            tickFormatter={d => d.slice(5)}
+          />
+          <YAxis
+            tick={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 9, fill: "#334155" }}
+            axisLine={false} tickLine={false}
+            tickFormatter={v => `${v > 0 ? "+" : ""}${v.toFixed(1)}u`}
+          />
+          <ReferenceLine y={0} stroke="rgba(255,255,255,0.08)" strokeDasharray="4 4" />
+          <Tooltip
+            contentStyle={{
+              background: "#0d1424", border: "1px solid rgba(255,255,255,0.10)",
+              borderRadius: 8, fontFamily: "'IBM Plex Mono', monospace", fontSize: 11,
+            }}
+            labelStyle={{ color: "#475569", fontSize: 10 }}
+            formatter={(v) => [`${v > 0 ? "+" : ""}${v.toFixed(2)}u`, "Net units"]}
+          />
+          <Line
+            type="monotone" dataKey="cumulative"
+            stroke={color} strokeWidth={2} dot={false}
+            activeDot={{ r: 3, fill: color }}
+          />
+        </LineChart>
+      </ResponsiveContainer>
     </div>
   );
 }
