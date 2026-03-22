@@ -456,3 +456,130 @@ async def score_backtest(req: BacktestScoreRequest):
         "picks_scored": len(scored),
         "scored": scored,
     }
+
+
+@router.get("/edge-history")
+async def get_edge_history():
+    """
+    Return all saved edge picks grouped by date, with unit P&L annotations.
+    Resolves any PENDING picks from prior dates before responding.
+    """
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    # ── Resolve pending picks from prior dates ──────────────────────────────
+    with get_db() as conn:
+        pending_rows = conn.execute(
+            "SELECT game_id, date, edge_team, home_name, away_name FROM edge_picks "
+            "WHERE result = 'PENDING' AND date < ?", (today,)
+        ).fetchall()
+
+    pending = [dict(r) for r in pending_rows]
+    if pending:
+        dates = list({p["date"] for p in pending})
+        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+            for d in dates:
+                try:
+                    resp = await client.get(f"{NHL_BASE}/score/{d}")
+                    if resp.status_code != 200:
+                        continue
+                    score_games = resp.json().get("games", [])
+                except Exception:
+                    continue
+
+                with get_db() as conn:
+                    for sg in score_games:
+                        if sg.get("gameState") not in ("OFF", "FINAL"):
+                            continue
+                        gid = sg.get("id")
+                        h_score = sg.get("homeTeam", {}).get("score") or 0
+                        a_score = sg.get("awayTeam", {}).get("score") or 0
+                        if h_score == a_score:
+                            continue
+                        actual_winner = "home" if h_score > a_score else "away"
+                        existing = conn.execute(
+                            "SELECT game_id, edge_team FROM edge_picks "
+                            "WHERE game_id = ? AND result = 'PENDING'", (gid,)
+                        ).fetchone()
+                        if existing:
+                            result = "WIN" if existing["edge_team"] == actual_winner else "LOSS"
+                            conn.execute(
+                                "UPDATE edge_picks SET actual_winner = ?, result = ? WHERE game_id = ?",
+                                (actual_winner, result, gid)
+                            )
+                    conn.commit()
+
+    # ── Reload all picks after resolution ───────────────────────────────────
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT game_id, date, home_abbrev, away_abbrev, home_name, away_name, "
+            "edge_team, edge_value, strong_flag, model_prob, implied_prob, "
+            "home_ml, away_ml, start_utc, actual_winner, result "
+            "FROM edge_picks ORDER BY date DESC, start_utc ASC"
+        ).fetchall()
+
+    picks = [dict(r) for r in rows]
+
+    # ── Compute summary totals ───────────────────────────────────────────────
+    total_wins    = sum(1 for p in picks if p["result"] == "WIN")
+    total_losses  = sum(1 for p in picks if p["result"] == "LOSS")
+    total_pending = sum(1 for p in picks if p["result"] == "PENDING")
+    total         = len(picks)
+    win_rate      = round(total_wins / (total_wins + total_losses), 4) if (total_wins + total_losses) > 0 else None
+
+    # ── Group by date ────────────────────────────────────────────────────────
+    by_date: dict = {}
+    for p in picks:
+        d = p["date"]
+        if d not in by_date:
+            by_date[d] = []
+        by_date[d].append(p)
+
+    picks_by_date = [
+        {
+            "date":    d,
+            "picks":   by_date[d],
+            "wins":    sum(1 for p in by_date[d] if p["result"] == "WIN"),
+            "losses":  sum(1 for p in by_date[d] if p["result"] == "LOSS"),
+            "pending": sum(1 for p in by_date[d] if p["result"] == "PENDING"),
+        }
+        for d in sorted(by_date.keys(), reverse=True)
+    ]
+
+    # ── Unit P&L per pick + cumulative series ────────────────────────────────
+    all_unit_results = []
+    for day in picks_by_date:
+        day_units = 0.0
+        for p in day["picks"]:
+            edge_ml = p["home_ml"] if p["edge_team"] == "home" else p["away_ml"]
+            ur = ml_to_units(edge_ml, p["result"], model_prob=p.get("model_prob"))
+            p["unit_result"] = ur
+            if ur is not None:
+                day_units = round(day_units + ur, 4)
+                all_unit_results.append({"date": p["date"], "units": ur})
+        day["net_units"] = day_units
+
+    all_unit_results.sort(key=lambda x: x["date"])
+    cumulative_units = []
+    running = 0.0
+    for entry in all_unit_results:
+        running = round(running + entry["units"], 4)
+        cumulative_units.append({"date": entry["date"], "cumulative": running})
+
+    total_units = round(sum(
+        p["unit_result"] for p in picks if p.get("unit_result") is not None
+    ), 4)
+    total_units_risked = sum(1 for p in picks if p["result"] in ("WIN", "LOSS"))
+
+    return {
+        "picks_by_date":    picks_by_date,
+        "cumulative_units": cumulative_units,
+        "totals": {
+            "total":        total,
+            "wins":         total_wins,
+            "losses":       total_losses,
+            "pending":      total_pending,
+            "win_rate":     win_rate,
+            "units_risked": total_units_risked,
+            "net_units":    total_units,
+        },
+    }

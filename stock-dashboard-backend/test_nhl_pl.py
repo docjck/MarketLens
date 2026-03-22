@@ -147,3 +147,29 @@ def test_backtest_pick_ml_optional():
     )
     assert pick.home_ml is None
     assert pick.away_ml is None
+
+
+def test_edge_history_unit_calc():
+    from nhl_router import ml_to_units
+    picks = [
+        {"result": "WIN",  "edge_team": "home", "home_ml": -140, "away_ml": 110, "model_prob": 0.60},
+        {"result": "LOSS", "edge_team": "away", "home_ml": -160, "away_ml": 135, "model_prob": 0.40},
+        {"result": "WIN",  "edge_team": "home", "home_ml": None, "away_ml": None, "model_prob": 0.65},
+    ]
+    unit_results = []
+    for p in picks:
+        edge_ml = p["home_ml"] if p["edge_team"] == "home" else p["away_ml"]
+        ur = ml_to_units(edge_ml, p["result"], model_prob=p["model_prob"])
+        unit_results.append(ur)
+
+    assert abs(unit_results[0] - round(100/140, 4)) < 0.0001
+    assert unit_results[1] == -1.0
+    assert abs(unit_results[2] - round(0.35/0.65, 4)) < 0.0001  # NOTE: model_prob=0.65 is within [0.20,0.80] so no clamping
+
+    running = 0.0
+    cumulative = []
+    for u in [u for u in unit_results if u is not None]:
+        running = round(running + u, 4)
+        cumulative.append(running)
+    assert len(cumulative) == 3
+    assert cumulative[1] < cumulative[0]
