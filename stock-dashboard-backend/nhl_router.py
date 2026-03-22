@@ -286,6 +286,7 @@ async def get_backtest_games(date: str = Path(..., pattern=r"^\d{4}-\d{2}-\d{2}$
                         e_away = event.get("away_team", "")
                         key = f"{e_home}|{e_away}"
                         for book in event.get("bookmakers", []):
+                            matched = False
                             for market in book.get("markets", []):
                                 if market["key"] == "h2h":
                                     mls = {o["name"]: o["price"] for o in market["outcomes"]}
@@ -294,7 +295,10 @@ async def get_backtest_games(date: str = Path(..., pattern=r"^\d{4}-\d{2}-\d{2}$
                                         "home_ml": mls.get(e_home),
                                         "away_ml": mls.get(e_away),
                                     }
+                                    matched = True
                                     break
+                            if matched:
+                                break
             except Exception:
                 pass  # odds unavailable — caller uses model prob fallback
 
