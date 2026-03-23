@@ -1061,7 +1061,7 @@ export default function App() {
               </div>
               <div className="tf-group">
                 <button className={`tf-btn ${activeTab === "stocks" ? "active" : ""}`} onClick={() => setActiveTab("stocks")}>📈 STOCKS</button>
-                <button className={`tf-btn ${activeTab === "nhl" ? "active" : ""}`} onClick={() => setActiveTab("nhl")}>🏒 NHL</button>
+                <button className={`tf-btn ${activeTab === "nhl" ? "active" : ""}`} onClick={() => setActiveTab("nhl")}>🏒 ICE EDGE</button>
               </div>
             </div>
           </div>
