@@ -121,13 +121,10 @@ function CustomTooltip({ active, payload, label, timeframe }) {
 
 // ─── Volume at Price ──────────────────────────────────────────────────────────
 
-const VAP_BINS = 40;
-// Each bar is 4px tall with a 1px gap. Total track height for 40 bins:
-// 40 * (4 + 1) - 1 = 199px. We pad the container to 320px to match chart height.
-const BAR_HEIGHT = 4;
+const BAR_HEIGHT = 2;
 const BAR_GAP = 1;
 
-function computeVAP(data) {
+function computeVAP(data, bins) {
   if (!data || data.length === 0) return null;
 
   const closes = data.map(d => d.close);
@@ -136,12 +133,12 @@ function computeVAP(data) {
   const range = maxPrice - minPrice;
 
   // Avoid division by zero when all closes are identical
-  const bucketSize = range === 0 ? 1 : range / VAP_BINS;
+  const bucketSize = range === 0 ? 1 : range / bins;
 
-  const buckets = Array.from({ length: VAP_BINS }, () => ({ volume: 0, priceLevel: 0 }));
+  const buckets = Array.from({ length: bins }, () => ({ volume: 0, priceLevel: 0 }));
 
   // Label each bucket by its midpoint price
-  for (let i = 0; i < VAP_BINS; i++) {
+  for (let i = 0; i < bins; i++) {
     buckets[i].priceLevel = minPrice + (i + 0.5) * bucketSize;
   }
 
@@ -149,8 +146,8 @@ function computeVAP(data) {
   for (const bar of data) {
     if (bar.volume == null || bar.close == null) continue;
     let idx = range === 0 ? 0 : Math.floor((bar.close - minPrice) / bucketSize);
-    // Clamp: the highest close maps to index VAP_BINS, pull it back
-    if (idx >= VAP_BINS) idx = VAP_BINS - 1;
+    // Clamp: the highest close maps to index bins, pull it back
+    if (idx >= bins) idx = bins - 1;
     buckets[idx].volume += bar.volume;
   }
 
@@ -160,26 +157,48 @@ function computeVAP(data) {
 }
 
 function VolumeAtPrice({ data }) {
+  const [containerHeight, setContainerHeight] = useState(0);
+  const containerRef = useRef(null);
+
+  useEffect(() => {
+    const observer = new ResizeObserver(entries => {
+      for (const entry of entries) {
+        setContainerHeight(entry.contentRect.height);
+      }
+    });
+    if (containerRef.current) {
+      observer.observe(containerRef.current);
+    }
+    return () => observer.disconnect();
+  }, []);
+
   if (!data || data.length === 0) return null;
 
-  const vap = computeVAP(data);
+  const containerStyle = {
+    position: "absolute",
+    top: 10,       // match Recharts top margin
+    bottom: 30,    // leave room for x-axis
+    right: 16,     // match Recharts right margin
+    width: 80,
+    display: "flex",
+    flexDirection: "column",
+    gap: BAR_GAP,
+    pointerEvents: "none",
+  };
+
+  if (containerHeight === 0) {
+    return <div ref={containerRef} style={containerStyle} />;
+  }
+
+  const bins = Math.max(10, Math.floor(containerHeight / 3));
+  const vap = computeVAP(data, bins);
   if (!vap) return null;
 
   const { buckets, maxVol } = vap;
   const orderedBuckets = [...buckets].reverse();
 
   return (
-    <div style={{
-      position: "absolute",
-      top: 10,       // match Recharts top margin
-      bottom: 30,    // leave room for x-axis
-      right: 16,     // match Recharts right margin
-      width: 80,
-      display: "flex",
-      flexDirection: "column",
-      justifyContent: "space-between",
-      pointerEvents: "none",
-    }}>
+    <div ref={containerRef} style={containerStyle}>
       {orderedBuckets.map((bucket, i) => {
         const isMax = bucket.volume === maxVol && maxVol > 0;
         const widthPct = maxVol === 0 ? 0 : (bucket.volume / maxVol) * 100;
@@ -1135,11 +1154,36 @@ export default function App() {
               <div className="chart-title">{ticker ? `${ticker} — PRICE + VOLUME` : "PRICE + VOLUME"}</div>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <div className="tf-group" style={{ marginRight: 8 }}>
-                  <button className={`tf-btn ${chartType === "line" ? "active" : ""}`} onClick={() => setChartType("line")}>LINE</button>
-                  <button className={`tf-btn ${chartType === "candle" ? "active" : ""}`} onClick={() => setChartType("candle")}>CANDLE</button>
+                  <button
+                    className={`tf-btn ${chartType === "line" ? "active" : ""}`}
+                    style={{ padding: "5px 10px" }}
+                    onClick={() => setChartType("line")}
+                    title="Line chart"
+                  >
+                    <svg width="20" height="16" viewBox="0 0 20 16" fill="none">
+                      <polyline points="1,13 5,8 9,10 13,4 19,6"
+                        stroke="currentColor" strokeWidth="1.5"
+                        strokeLinejoin="round" strokeLinecap="round"/>
+                    </svg>
+                  </button>
+                  <button
+                    className={`tf-btn ${chartType === "candle" ? "active" : ""}`}
+                    style={{ padding: "5px 10px" }}
+                    onClick={() => setChartType("candle")}
+                    title="Candlestick"
+                  >
+                    <svg width="20" height="16" viewBox="0 0 20 16" fill="none">
+                      <line x1="5" y1="1" x2="5" y2="4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                      <rect x="3" y="4" width="4" height="6" rx="0.5" fill="currentColor" opacity="0.7"/>
+                      <line x1="5" y1="10" x2="5" y2="14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                      <line x1="15" y1="2" x2="15" y2="5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                      <rect x="13" y="5" width="4" height="6" rx="0.5" fill="none" stroke="currentColor" strokeWidth="1"/>
+                      <line x1="15" y1="11" x2="15" y2="15" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                    </svg>
+                  </button>
                 </div>
                 <div className="tf-group">
-                  {["1d", "5d", "6m", "1y"].map(tf => (
+                  {["1d", "5d", "6m", "1y", "5y"].map(tf => (
                     <button key={tf} className={`tf-btn ${timeframe === tf ? "active" : ""}`}
                       onClick={() => handleTimeframe(tf)} disabled={!ticker || loadingChart}>
                       {tf.toUpperCase()}
