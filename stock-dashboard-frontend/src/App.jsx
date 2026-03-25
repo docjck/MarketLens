@@ -1020,6 +1020,7 @@ export default function App() {
         .tf-btn:hover { color: #94a3b8; }
         .tf-btn.active { background: rgba(0,255,136,0.12); color: #00ff88; }
         .tf-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+        .tf-btn.icon { padding: 5px 10px; }
         .legend { display: flex; gap: 20px; padding: 12px 8px 0; border-top: 1px solid rgba(255,255,255,0.04); margin-top: 8px; }
         .legend-item { display: flex; align-items: center; gap: 6px; font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #475569; }
         .legend-dot { width: 8px; height: 8px; border-radius: 2px; }
@@ -1155,10 +1156,10 @@ export default function App() {
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <div className="tf-group" style={{ marginRight: 8 }}>
                   <button
-                    className={`tf-btn ${chartType === "line" ? "active" : ""}`}
-                    style={{ padding: "5px 10px" }}
+                    className={`tf-btn icon ${chartType === "line" ? "active" : ""}`}
                     onClick={() => setChartType("line")}
                     title="Line chart"
+                    aria-label="Line chart"
                   >
                     <svg width="20" height="16" viewBox="0 0 20 16" fill="none">
                       <polyline points="1,13 5,8 9,10 13,4 19,6"
@@ -1167,14 +1168,14 @@ export default function App() {
                     </svg>
                   </button>
                   <button
-                    className={`tf-btn ${chartType === "candle" ? "active" : ""}`}
-                    style={{ padding: "5px 10px" }}
+                    className={`tf-btn icon ${chartType === "candle" ? "active" : ""}`}
                     onClick={() => setChartType("candle")}
                     title="Candlestick"
+                    aria-label="Candlestick"
                   >
                     <svg width="20" height="16" viewBox="0 0 20 16" fill="none">
                       <line x1="5" y1="1" x2="5" y2="4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-                      <rect x="3" y="4" width="4" height="6" rx="0.5" fill="currentColor" opacity="0.7"/>
+                      <rect x="3" y="4" width="4" height="6" rx="0.5" fill="currentColor"/>
                       <line x1="5" y1="10" x2="5" y2="14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
                       <line x1="15" y1="2" x2="15" y2="5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
                       <rect x="13" y="5" width="4" height="6" rx="0.5" fill="none" stroke="currentColor" strokeWidth="1"/>
