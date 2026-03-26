@@ -764,6 +764,7 @@ export default function App() {
   const [loadingSuggest, setLoadingSuggest] = useState(false);
   const [fundamentals, setFundamentals] = useState(null);
   const [loadingFundamentals, setLoadingFundamentals] = useState(false);
+  const [prices, setPrices] = useState({});
   const [drawMode, setDrawMode] = useState(false);
   const [drawTool, setDrawTool] = useState("line");
   const [drawColor, setDrawColor] = useState("#f59e0b");
@@ -772,10 +773,36 @@ export default function App() {
     catch { return {}; }
   });
 
+  const watchlistRef = useRef(watchlist);
+  const isFetchingRef = useRef(false);
+
   // Sync localStorage cache whenever watchlist changes
   useEffect(() => {
     localStorage.setItem(WATCHLIST_KEY, JSON.stringify(watchlist));
   }, [watchlist]);
+
+  // Keep watchlistRef current so the polling closure always sees latest watchlist
+  useEffect(() => { watchlistRef.current = watchlist; }, [watchlist]);
+
+  // Fetch prices once on mount, then every 60 seconds
+  useEffect(() => {
+    const fetchPrices = () => {
+      if (isFetchingRef.current) return;
+      isFetchingRef.current = true;
+      const tickers = [
+        ...MARKETS.flatMap(g => g.items.map(i => i.ticker)),
+        ...watchlistRef.current.map(w => w.ticker),
+      ].join(",");
+      fetch(`${API_BASE}/prices?tickers=${tickers}`, { headers: apiHeaders() })
+        .then(r => r.ok ? r.json() : null)
+        .then(data => { if (data) setPrices(prev => ({ ...prev, ...data })); })
+        .catch(() => {})
+        .finally(() => { isFetchingRef.current = false; });
+    };
+    fetchPrices();
+    const id = setInterval(fetchPrices, 60_000);
+    return () => clearInterval(id);
+  }, []); // stable — watchlist read via ref
 
   useEffect(() => {
     localStorage.setItem("marketlens_annotations", JSON.stringify(annotations));
