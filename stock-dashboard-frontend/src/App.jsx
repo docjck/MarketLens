@@ -796,7 +796,9 @@ export default function App() {
       fetch(`${API_BASE}/prices?tickers=${tickers}`, { headers: apiHeaders() })
         .then(r => r.ok ? r.json() : null)
         .then(data => { if (data) setPrices(prev => ({ ...prev, ...data })); })
-        .catch(() => {})
+        .catch((err) => {
+          if (import.meta.env.DEV) console.warn("[prices poll]", err);
+        })
         .finally(() => { isFetchingRef.current = false; });
     };
     fetchPrices();
