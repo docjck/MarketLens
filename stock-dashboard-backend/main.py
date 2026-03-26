@@ -3,6 +3,7 @@ load_dotenv()
 
 import re
 import os
+import math
 from urllib.parse import unquote
 import sqlite3
 import logging
@@ -370,9 +371,9 @@ def get_prices(request: Request, tickers: str = ""):
             fi = yf.Ticker(sym).fast_info
             last = getattr(fi, "last_price", None)
             prev = getattr(fi, "previous_close", None)
-            if not isinstance(last, (int, float)):
+            if not isinstance(last, (int, float)) or math.isnan(last):
                 last = None
-            if not isinstance(prev, (int, float)):
+            if not isinstance(prev, (int, float)) or math.isnan(prev):
                 prev = None
             return sym, _compute_pct_change(last, prev)
         except Exception:

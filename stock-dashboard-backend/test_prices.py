@@ -1,7 +1,12 @@
 import sys, os
 sys.path.insert(0, os.path.dirname(__file__))
 
-from main import _compute_pct_change
+from unittest.mock import patch, MagicMock
+from fastapi.testclient import TestClient
+
+from main import _compute_pct_change, app
+
+client = TestClient(app)
 
 
 def test_normal_gain():
@@ -31,13 +36,6 @@ def test_prev_close_zero():
 def test_result_rounded_to_two_decimals():
     result = _compute_pct_change(101.005, 100.0)
     assert result == 1.0
-
-
-from unittest.mock import patch, MagicMock
-from fastapi.testclient import TestClient
-from main import app
-
-client = TestClient(app)
 
 
 def _mock_fast_info(last_price, previous_close):
@@ -106,12 +104,12 @@ def test_prices_truncates_at_50():
         mock_ticker.return_value.fast_info = mock_fi
         resp = client.get(f"/prices?tickers={tickers}")
     assert resp.status_code == 200
-    assert len(resp.json()) <= 50
+    assert len(resp.json()) == 50
 
 
 def test_prices_yfinance_error_returns_null():
     with patch("main.yf.Ticker") as mock_ticker:
-        mock_ticker.return_value.fast_info = MagicMock(side_effect=Exception("network error"))
+        mock_ticker.side_effect = Exception("network error")
         resp = client.get("/prices?tickers=AAPL")
     assert resp.status_code == 200
     assert resp.json() == {"AAPL": None}
