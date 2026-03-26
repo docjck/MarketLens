@@ -30,4 +30,4 @@ def test_prev_close_zero():
 
 def test_result_rounded_to_two_decimals():
     result = _compute_pct_change(101.005, 100.0)
-    assert result == round((101.005 - 100.0) / 100.0 * 100, 2)
+    assert result == 1.0
