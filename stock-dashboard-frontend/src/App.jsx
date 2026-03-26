@@ -629,7 +629,7 @@ function Markets({ activeTicker, onSelect, prices }) {
 
 // ─── Watchlist ────────────────────────────────────────────────────────────────
 
-function Watchlist({ watchlist, activeTicker, onSelect, onRemove }) {
+function Watchlist({ watchlist, activeTicker, onSelect, onRemove, prices }) {
   if (!watchlist.length) return (
     <div className="watchlist-empty">
       <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, color: "#1e293b", letterSpacing: 1.5 }}>
@@ -639,18 +639,31 @@ function Watchlist({ watchlist, activeTicker, onSelect, onRemove }) {
   );
   return (
     <div className="watchlist">
-      {watchlist.map(item => (
-        <div key={item.ticker}
-          className={`watchlist-item ${activeTicker === item.ticker ? "watchlist-item-active" : ""}`}
-          onClick={() => onSelect(item.ticker)}
-        >
-          <div style={{ minWidth: 0 }}>
-            <div className="wl-ticker">{item.ticker}</div>
-            <div className="wl-name">{item.name}</div>
+      {watchlist.map(item => {
+        const pct = prices?.[item.ticker];
+        return (
+          <div key={item.ticker}
+            className={`watchlist-item ${activeTicker === item.ticker ? "watchlist-item-active" : ""}`}
+            onClick={() => onSelect(item.ticker)}
+          >
+            <div style={{ minWidth: 0, flex: 1 }}>
+              <div className="wl-ticker">{item.ticker}</div>
+              <div className="wl-name">{item.name}</div>
+            </div>
+            <div style={{
+              fontFamily: "'IBM Plex Mono', monospace",
+              fontSize: 11,
+              fontWeight: 600,
+              paddingLeft: 8,
+              flexShrink: 0,
+              color: pct == null ? "#1e293b" : pct >= 0 ? "#00ff88" : "#ef4444",
+            }}>
+              {pct == null ? "—" : `${pct >= 0 ? "+" : ""}${pct.toFixed(2)}%`}
+            </div>
+            <button className="wl-remove" onClick={e => { e.stopPropagation(); onRemove(item.ticker); }} title="Remove">✕</button>
           </div>
-          <button className="wl-remove" onClick={e => { e.stopPropagation(); onRemove(item.ticker); }} title="Remove">✕</button>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -1111,6 +1124,7 @@ export default function App() {
             activeTicker={ticker}
             onSelect={handleWatchlistSelect}
             onRemove={handleRemoveFromWatchlist}
+            prices={prices}
           />
         </aside>
 
