@@ -19,6 +19,8 @@ from slowapi.middleware import SlowAPIMiddleware
 import yfinance as yf
 import requests as req_lib
 
+from concurrent.futures import ThreadPoolExecutor, wait as futures_wait
+
 from nhl_router import router as nhl_router
 
 logging.basicConfig(level=logging.INFO)
@@ -346,6 +348,49 @@ def remove_from_watchlist(ticker: str = Path(..., max_length=20)):
         conn.execute("DELETE FROM watchlist WHERE ticker = ?", (sym,))
         conn.commit()
     return {"removed": sym}
+
+
+@app.get("/prices")
+@limiter.limit("10/minute")
+def get_prices(request: Request, tickers: str = ""):
+    """Return % change from previous close for a batch of tickers."""
+    if not tickers:
+        return {}
+
+    raw = [t.strip() for t in tickers.split(",") if t.strip()]
+    valid = [t.upper() for t in raw if _TICKER_PATTERN.match(t)][:50]
+
+    if not valid:
+        return {}
+
+    result = {}
+
+    def fetch_one(sym):
+        try:
+            fi = yf.Ticker(sym).fast_info
+            last = getattr(fi, "last_price", None)
+            prev = getattr(fi, "previous_close", None)
+            if not isinstance(last, (int, float)):
+                last = None
+            if not isinstance(prev, (int, float)):
+                prev = None
+            return sym, _compute_pct_change(last, prev)
+        except Exception:
+            return sym, None
+
+    executor = ThreadPoolExecutor(max_workers=20)
+    futures_map = {executor.submit(fetch_one, sym): sym for sym in valid}
+    done, not_done = futures_wait(futures_map, timeout=8)
+    executor.shutdown(wait=False)
+
+    for f in done:
+        sym, pct = f.result()
+        result[sym] = pct
+
+    for f in not_done:
+        result[futures_map[f]] = None
+
+    return result
 
 
 @app.get("/chart/{ticker}/all")
