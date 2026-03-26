@@ -88,6 +88,7 @@ TIMEFRAME_MAP = {
     "5d":  {"period": "5d",   "interval": "30m"},
     "6m":  {"period": "6mo",  "interval": "1d"},
     "1y":  {"period": "1y",   "interval": "1d"},
+    "5y":  {"period": "5y",   "interval": "1wk"},
 }
 
 _TICKER_PATTERN = re.compile(r'^[\^A-Za-z0-9.\-=]{1,20}$')
@@ -101,6 +102,13 @@ def _validate_ticker_param(ticker: str) -> str:
     return ticker.upper()
 
 
+def _compute_pct_change(last_price, previous_close):
+    """Return % change from previous close, or None if data is unavailable."""
+    if last_price is None or previous_close is None or previous_close == 0:
+        return None
+    return round((last_price - previous_close) / previous_close * 100, 2)
+
+
 def fetch_stock_data(ticker: str, period: str, interval: str) -> list:
     """Fetch OHLCV data from yfinance and return as a list of dicts."""
     try:
@@ -111,7 +119,7 @@ def fetch_stock_data(ticker: str, period: str, interval: str) -> list:
             raise ValueError(f"No data returned for ticker '{ticker}'")
 
         df = df.reset_index()
-        is_intraday = interval == "5m"
+        is_intraday = interval.endswith("m") or interval.endswith("h")
         date_col = "Datetime" if is_intraday else "Date"
         if is_intraday:
             df[date_col] = df[date_col].dt.strftime("%Y-%m-%dT%H:%M")
