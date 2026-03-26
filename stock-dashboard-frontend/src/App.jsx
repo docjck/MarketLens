@@ -577,7 +577,7 @@ const MARKETS = [
   ]},
 ];
 
-function Markets({ activeTicker, onSelect }) {
+function Markets({ activeTicker, onSelect, prices }) {
   return (
     <div>
       {MARKETS.map(group => (
@@ -594,18 +594,31 @@ function Markets({ activeTicker, onSelect }) {
             {group.label}
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-            {group.items.map(item => (
-              <div
-                key={item.ticker}
-                className={`watchlist-item ${activeTicker === item.ticker ? "watchlist-item-active" : ""}`}
-                onClick={() => onSelect(item.ticker)}
-              >
-                <div style={{ minWidth: 0 }}>
-                  <div className="wl-ticker">{item.ticker}</div>
-                  <div className="wl-name">{item.label}</div>
+            {group.items.map(item => {
+              const pct = prices?.[item.ticker];
+              return (
+                <div
+                  key={item.ticker}
+                  className={`watchlist-item ${activeTicker === item.ticker ? "watchlist-item-active" : ""}`}
+                  onClick={() => onSelect(item.ticker)}
+                >
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <div className="wl-ticker">{item.ticker}</div>
+                    <div className="wl-name">{item.label}</div>
+                  </div>
+                  <div style={{
+                    fontFamily: "'IBM Plex Mono', monospace",
+                    fontSize: 11,
+                    fontWeight: 600,
+                    paddingLeft: 8,
+                    flexShrink: 0,
+                    color: pct == null ? "#1e293b" : pct >= 0 ? "#00ff88" : "#ef4444",
+                  }}>
+                    {pct == null ? "—" : `${pct >= 0 ? "+" : ""}${pct.toFixed(2)}%`}
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       ))}
@@ -1091,7 +1104,7 @@ export default function App() {
       <div className="layout">
         <aside className="sidebar">
           <div className="sidebar-header">Markets</div>
-          <Markets activeTicker={ticker} onSelect={handleWatchlistSelect} />
+          <Markets activeTicker={ticker} onSelect={handleWatchlistSelect} prices={prices} />
           <div className="sidebar-header" style={{ marginTop: 16 }}>Watchlist</div>
           <Watchlist
             watchlist={watchlist}
