@@ -730,11 +730,292 @@ function FundamentalsCard({ data, loading }) {
   );
 }
 
-// ─── Portfolio (stub — full component added in Task 4) ───────────────────────
-function Portfolio({ portfolioList }) {
+// ─── Portfolio ────────────────────────────────────────────────────────────────
+
+const BADGE_COLORS = {
+  green:  { background: "#052e16", color: "#00ff88", border: "1px solid #00ff8833" },
+  red:    { background: "#450a0a", color: "#ef4444", border: "1px solid #ef444433" },
+  yellow: { background: "#422006", color: "#f59e0b", border: "1px solid #f59e0b33" },
+  gray:   { background: "#1e293b", color: "#94a3b8", border: "1px solid #33415533" },
+};
+
+function PortfolioBadge({ label, colorKey }) {
+  const s = BADGE_COLORS[colorKey] || BADGE_COLORS.gray;
   return (
-    <div style={{ color: "#475569", padding: 40, textAlign: "center", fontFamily: "IBM Plex Mono, monospace" }}>
-      Portfolio component coming soon — {portfolioList.length} stocks in list.
+    <span style={{
+      ...s, padding: "2px 7px", borderRadius: 3,
+      fontSize: 10, fontFamily: "IBM Plex Mono, monospace", whiteSpace: "nowrap",
+    }}>{label}</span>
+  );
+}
+
+function getBadges(data) {
+  if (!data || data === "loading" || data === "error") return [];
+  const badges = [];
+
+  if (data.short_interest_pct != null) {
+    const p = data.short_interest_pct;
+    if (p > SHORT_INTEREST_HIGH)      badges.push({ label: `SHORT ${p.toFixed(1)}% ⚠`, colorKey: "red" });
+    else if (p > SHORT_INTEREST_WARN) badges.push({ label: `SHORT ${p.toFixed(1)}% ⚡`, colorKey: "yellow" });
+    else                              badges.push({ label: `SHORT ${p.toFixed(1)}% ✓`, colorKey: "green" });
+  } else {
+    badges.push({ label: "SHORT —", colorKey: "gray" });
+  }
+
+  if (data.avg_volume != null) {
+    const v = data.avg_volume;
+    if (v < AVG_VOLUME_LOW)       badges.push({ label: `VOL ${formatVolume(v)} ⚠`, colorKey: "red" });
+    else if (v < AVG_VOLUME_WARN) badges.push({ label: `VOL ${formatVolume(v)} ⚡`, colorKey: "yellow" });
+    else                          badges.push({ label: `VOL ${formatVolume(v)} ✓`, colorKey: "green" });
+  } else {
+    badges.push({ label: "VOL —", colorKey: "gray" });
+  }
+
+  if (data.insider_net != null) {
+    if (data.insider_net > 0)      badges.push({ label: "INSIDER +BUY", colorKey: "green" });
+    else if (data.insider_net < 0) badges.push({ label: "INSIDER -SELL", colorKey: "red" });
+    else                           badges.push({ label: "INSIDER NEUT", colorKey: "gray" });
+  } else {
+    badges.push({ label: "INSIDER —", colorKey: "gray" });
+  }
+
+  if (data.golden_cross != null) {
+    badges.push(data.golden_cross
+      ? { label: "GOLDEN ✓", colorKey: "green" }
+      : { label: "DEATH ✗",  colorKey: "red" }
+    );
+  } else {
+    badges.push({ label: "CROSS —", colorKey: "gray" });
+  }
+
+  return badges;
+}
+
+function getNextEvent(data) {
+  if (!data || data === "loading" || data === "error") return null;
+  const today = new Date();
+  const events = [];
+  if (data.earnings_date) {
+    const d = new Date(data.earnings_date + "T00:00:00");
+    const days = Math.ceil((d - today) / 86400000);
+    if (days >= 0) events.push({ label: `EARN ${d.toLocaleDateString("en-US", { month: "short", day: "numeric" })}`, days, warn: days <= EARNINGS_WARN_DAYS });
+  }
+  if (data.ex_dividend_date) {
+    const d = new Date(data.ex_dividend_date + "T00:00:00");
+    const days = Math.ceil((d - today) / 86400000);
+    if (days >= 0 && days <= EXDIV_ALERT_DAYS)
+      events.push({ label: `EX-DIV ${d.toLocaleDateString("en-US", { month: "short", day: "numeric" })}`, days, warn: false });
+  }
+  events.sort((a, b) => a.days - b.days);
+  return events[0] || null;
+}
+
+function Portfolio({ portfolioList, screenResults, watchlist, onAdd, onRemove }) {
+  const [expanded, setExpanded] = useState(new Set());
+  const [addInput, setAddInput]   = useState("");
+  const [addSuggestions, setAddSuggestions] = useState([]);
+  const [showImport, setShowImport] = useState(false);
+  const [importSelected, setImportSelected] = useState(new Set());
+  const suggestTimer = useRef(null);
+
+  const importCandidates = watchlist.filter(w => !portfolioList.some(p => p.ticker === w.ticker));
+
+  function handleAddInputChange(e) {
+    const val = e.target.value.toUpperCase();
+    setAddInput(val);
+    clearTimeout(suggestTimer.current);
+    if (val.length < 1) { setAddSuggestions([]); return; }
+    suggestTimer.current = setTimeout(async () => {
+      try {
+        const r = await fetch(`${API_BASE}/suggest/${encodeURIComponent(val)}`, { headers: apiHeaders() });
+        const d = await r.json();
+        setAddSuggestions((d.results || []).slice(0, 6));
+      } catch { setAddSuggestions([]); }
+    }, 300);
+  }
+
+  async function handleAddTicker(ticker, name) {
+    await onAdd(ticker, name);
+    setAddInput("");
+    setAddSuggestions([]);
+  }
+
+  async function handleImportConfirm() {
+    for (const ticker of importSelected) {
+      const item = watchlist.find(w => w.ticker === ticker);
+      if (item) await onAdd(item.ticker, item.name);
+    }
+    setImportSelected(new Set());
+    setShowImport(false);
+  }
+
+  function toggleExpand(ticker) {
+    setExpanded(prev => {
+      const next = new Set(prev);
+      next.has(ticker) ? next.delete(ticker) : next.add(ticker);
+      return next;
+    });
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+
+      {/* Add bar */}
+      <div style={{ display: "flex", gap: 8, alignItems: "center", position: "relative" }}>
+        <input
+          className="search-input"
+          style={{ flex: 1 }}
+          value={addInput}
+          onChange={handleAddInputChange}
+          onBlur={() => setTimeout(() => setAddSuggestions([]), 150)}
+          onKeyDown={e => {
+            if (e.key === "Enter" && addInput.trim()) handleAddTicker(addInput.trim(), addInput.trim());
+          }}
+          placeholder="ADD TICKER OR COMPANY NAME…"
+          maxLength={50}
+        />
+        <button
+          className="search-btn"
+          disabled={!addInput.trim()}
+          onClick={() => handleAddTicker(addInput.trim(), addInput.trim())}
+        >+ ADD</button>
+        <button
+          className="tf-btn"
+          onClick={() => setShowImport(v => !v)}
+        >↑ FROM WATCHLIST</button>
+
+        {/* Autocomplete dropdown */}
+        {addSuggestions.length > 0 && (
+          <div className="suggestions-dropdown" style={{ top: "100%", left: 0, right: 120 }}>
+            {addSuggestions.map(s => (
+              <div key={s.ticker} className="suggestion-item"
+                onMouseDown={() => handleAddTicker(s.ticker, s.name)}>
+                <span className="suggestion-ticker">{s.ticker}</span>
+                <span className="suggestion-name">{s.name}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* From Watchlist import panel */}
+      {showImport && (
+        <div style={{ background: "#0f172a", border: "1px solid #1e293b", borderRadius: 6, padding: 12 }}>
+          {importCandidates.length === 0 ? (
+            <span style={{ color: "#475569", fontSize: 12 }}>All watchlist items are already in your portfolio.</span>
+          ) : (
+            <>
+              <div style={{ color: "#94a3b8", fontSize: 11, marginBottom: 8 }}>Select items to add:</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 10 }}>
+                {importCandidates.map(w => (
+                  <label key={w.ticker} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", color: "#e2e8f0", fontSize: 12 }}>
+                    <input
+                      type="checkbox"
+                      checked={importSelected.has(w.ticker)}
+                      onChange={e => setImportSelected(prev => {
+                        const next = new Set(prev);
+                        e.target.checked ? next.add(w.ticker) : next.delete(w.ticker);
+                        return next;
+                      })}
+                    />
+                    <span style={{ color: "#00ff88", fontFamily: "IBM Plex Mono, monospace" }}>{w.ticker}</span>
+                    <span style={{ color: "#475569" }}>{w.name}</span>
+                  </label>
+                ))}
+              </div>
+              <button className="search-btn" disabled={importSelected.size === 0} onClick={handleImportConfirm}>
+                ADD SELECTED ({importSelected.size})
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Column headers */}
+      {portfolioList.length > 0 && (
+        <div style={{ display: "grid", gridTemplateColumns: "80px 70px 1fr 100px 20px", gap: 8, padding: "0 10px", color: "#334155", fontSize: 10, textTransform: "uppercase", fontFamily: "IBM Plex Mono, monospace" }}>
+          <span>Ticker</span><span>Price</span><span>Signals</span><span>Next Event</span><span />
+        </div>
+      )}
+
+      {/* Rows */}
+      {portfolioList.length === 0 ? (
+        <div style={{ color: "#334155", fontSize: 13, textAlign: "center", padding: "40px 0" }}>
+          No stocks in portfolio. Add a ticker above or import from your watchlist.
+        </div>
+      ) : (
+        portfolioList.map(({ ticker, name }) => {
+          const data = screenResults[ticker];
+          const isLoading = !data || data === "loading";
+          const isError   = data === "error";
+          const isExpanded = expanded.has(ticker);
+          const badges = getBadges(data);
+          const nextEvent = getNextEvent(data);
+          const price = (!isLoading && !isError && data?.current_price) ? formatPrice(data.current_price) : "—";
+
+          return (
+            <div key={ticker} style={{ background: "#0f172a", border: "1px solid #1e293b", borderRadius: 6 }}>
+              {/* Collapsed row */}
+              <div
+                style={{ display: "grid", gridTemplateColumns: "80px 70px 1fr 100px 20px", gap: 8, padding: "9px 10px", alignItems: "center", cursor: "pointer" }}
+                onClick={() => !isLoading && !isError && toggleExpand(ticker)}
+              >
+                <span style={{ color: "#00ff88", fontWeight: "bold", fontSize: 12, fontFamily: "IBM Plex Mono, monospace" }}>{ticker}</span>
+                <span style={{ color: "#e2e8f0", fontSize: 12, fontFamily: "IBM Plex Mono, monospace" }}>{price}</span>
+
+                {/* Badges or loading shimmer */}
+                <div style={{ display: "flex", gap: 4, flexWrap: "wrap", alignItems: "center" }}>
+                  {isLoading ? (
+                    [60, 50, 70, 65].map((w, i) => (
+                      <div key={i} className="skeleton" style={{ width: w, height: 18, borderRadius: 3, animationDelay: `${i * 0.1}s` }} />
+                    ))
+                  ) : isError ? (
+                    <PortfolioBadge label="DATA UNAVAILABLE" colorKey="gray" />
+                  ) : (
+                    badges.map((b, i) => <PortfolioBadge key={i} label={b.label} colorKey={b.colorKey} />)
+                  )}
+                </div>
+
+                {/* Next event */}
+                <span style={{ fontSize: 10, fontFamily: "IBM Plex Mono, monospace", color: nextEvent?.warn ? "#f59e0b" : "#475569" }}>
+                  {isLoading ? "" : nextEvent?.label ?? "—"}
+                </span>
+
+                {/* Expand arrow */}
+                <span style={{ color: "#475569", fontSize: 11 }}>
+                  {!isLoading && !isError && (isExpanded ? "▾" : "▸")}
+                </span>
+              </div>
+
+              {/* Expand detail panel */}
+              {isExpanded && data && data !== "loading" && data !== "error" && (
+                <div style={{ borderTop: "1px solid #1e293b", padding: "10px 10px", display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12 }}>
+                  {[
+                    { label: "Short Interest", value: data.short_interest_pct != null ? `${data.short_interest_pct.toFixed(1)}% of float` : "N/A", sub: `flag > ${SHORT_INTEREST_HIGH}%` },
+                    { label: "Avg Daily Volume", value: data.avg_volume != null ? `${formatVolume(data.avg_volume)} shares` : "N/A", sub: `flag < ${formatVolume(AVG_VOLUME_LOW)}` },
+                    { label: "Insider (recent 20)", value: data.insider_net != null ? `+${data.insider_buys} buys, ${data.insider_sells} sells` : "N/A", sub: data.insider_net != null ? (data.insider_net > 0 ? "net bullish" : data.insider_net < 0 ? "net bearish" : "neutral") : "" },
+                    { label: "Golden Cross", value: data.golden_cross != null ? `50MA $${data.ma_50} vs 200MA $${data.ma_200}` : "Insufficient data (<200d)", sub: data.golden_cross === true ? "bullish signal" : data.golden_cross === false ? "death cross" : "" },
+                    { label: "Next Earnings", value: data.earnings_date ?? "N/A", sub: data.earnings_date ? `flag within ${EARNINGS_WARN_DAYS}d` : "" },
+                    { label: "Ex-Dividend", value: data.ex_dividend_date ?? "None upcoming", sub: data.ex_dividend_date ? `show within ${EXDIV_ALERT_DAYS}d` : "" },
+                  ].map(({ label, value, sub }) => (
+                    <div key={label}>
+                      <div style={{ color: "#475569", fontSize: 9, textTransform: "uppercase", marginBottom: 3, fontFamily: "IBM Plex Mono, monospace" }}>{label}</div>
+                      <div style={{ color: "#e2e8f0", fontSize: 11, fontFamily: "IBM Plex Mono, monospace" }}>{value}</div>
+                      {sub && <div style={{ color: "#334155", fontSize: 9, fontFamily: "IBM Plex Mono, monospace" }}>{sub}</div>}
+                    </div>
+                  ))}
+                  <div style={{ gridColumn: "1 / -1", display: "flex", justifyContent: "flex-end", marginTop: 4 }}>
+                    <button
+                      style={{ background: "transparent", border: "1px solid #334155", color: "#475569", padding: "3px 10px", borderRadius: 3, fontSize: 10, cursor: "pointer", fontFamily: "IBM Plex Mono, monospace" }}
+                      onClick={e => { e.stopPropagation(); onRemove(ticker); }}
+                    >REMOVE</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })
+      )}
     </div>
   );
 }
