@@ -9,6 +9,14 @@ const API_BASE = "/api";
 const WATCHLIST_KEY = "marketlens_watchlist";
 const API_TOKEN = import.meta.env.VITE_API_TOKEN || "";
 
+// ─── Portfolio screening thresholds (match backend main.py constants) ─────────
+const SHORT_INTEREST_HIGH = 10.0;
+const SHORT_INTEREST_WARN = 5.0;
+const AVG_VOLUME_LOW      = 1_000_000;
+const AVG_VOLUME_WARN     = 5_000_000;
+const EARNINGS_WARN_DAYS  = 14;
+const EXDIV_ALERT_DAYS    = 30;
+
 function apiHeaders(extra = {}) {
   return API_TOKEN ? { "X-API-Token": API_TOKEN, ...extra } : { ...extra };
 }
@@ -722,6 +730,15 @@ function FundamentalsCard({ data, loading }) {
   );
 }
 
+// ─── Portfolio (stub — full component added in Task 4) ───────────────────────
+function Portfolio({ portfolioList }) {
+  return (
+    <div style={{ color: "#475569", padding: 40, textAlign: "center", fontFamily: "IBM Plex Mono, monospace" }}>
+      Portfolio component coming soon — {portfolioList.length} stocks in list.
+    </div>
+  );
+}
+
 // ─── Main App ─────────────────────────────────────────────────────────────────
 
 export default function App() {
@@ -740,6 +757,8 @@ export default function App() {
     try { return JSON.parse(localStorage.getItem(WATCHLIST_KEY)) || []; }
     catch { return []; }
   });
+  const [portfolioList, setPortfolioList] = useState([]);
+  const [screenResults, setScreenResults] = useState({});  // ticker → data | "loading" | "error"
   const [suggestions, setSuggestions] = useState([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [loadingSuggest, setLoadingSuggest] = useState(false);
@@ -771,6 +790,13 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    fetch(`${API_BASE}/portfolio`, { headers: apiHeaders() })
+      .then(r => r.ok ? r.json() : null)
+      .then(json => { if (json?.items) setPortfolioList(json.items); })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
     if (query.length < 2) { setSuggestions([]); setShowSuggestions(false); return; }
     const timer = setTimeout(async () => {
       setLoadingSuggest(true);
@@ -786,6 +812,21 @@ export default function App() {
     }, 300);
     return () => clearTimeout(timer);
   }, [query]);
+
+  const loadPortfolioScreening = useCallback((list) => {
+    if (!list.length) return;
+    setScreenResults(prev => {
+      const next = { ...prev };
+      list.forEach(({ ticker }) => { if (!next[ticker]) next[ticker] = "loading"; });
+      return next;
+    });
+    list.forEach(({ ticker }) => {
+      fetch(`${API_BASE}/screen/${encodeURIComponent(ticker)}`, { headers: apiHeaders() })
+        .then(r => r.ok ? r.json() : Promise.reject())
+        .then(data => setScreenResults(prev => ({ ...prev, [ticker]: data })))
+        .catch(() => setScreenResults(prev => ({ ...prev, [ticker]: "error" })));
+    });
+  }, []);
 
   const fetchChart = useCallback(async (sym, tf, cache) => {
     if (cache[sym]?.[tf]) return cache;
@@ -1061,12 +1102,41 @@ export default function App() {
               </div>
               <div className="tf-group">
                 <button className={`tf-btn ${activeTab === "stocks" ? "active" : ""}`} onClick={() => setActiveTab("stocks")}>📈 STOCKS</button>
+                <button className={`tf-btn ${activeTab === "portfolio" ? "active" : ""}`} onClick={() => { setActiveTab("portfolio"); loadPortfolioScreening(portfolioList); }}>📊 PORTFOLIO</button>
                 <button className={`tf-btn ${activeTab === "nhl" ? "active" : ""}`} onClick={() => setActiveTab("nhl")}>🏒 ICE EDGE</button>
               </div>
             </div>
           </div>
 
           {activeTab === "nhl" && <NHLPredictor />}
+
+          {activeTab === "portfolio" && (
+            <Portfolio
+              portfolioList={portfolioList}
+              screenResults={screenResults}
+              watchlist={watchlist}
+              onAdd={async (ticker, name) => {
+                await fetch(`${API_BASE}/portfolio`, {
+                  method: "POST",
+                  headers: apiHeaders({ "Content-Type": "application/json" }),
+                  body: JSON.stringify({ ticker, name }),
+                });
+                setPortfolioList(prev => prev.some(p => p.ticker === ticker) ? prev : [...prev, { ticker, name }]);
+                setScreenResults(prev => ({ ...prev, [ticker]: "loading" }));
+                fetch(`${API_BASE}/screen/${encodeURIComponent(ticker)}`, { headers: apiHeaders() })
+                  .then(r => r.ok ? r.json() : Promise.reject())
+                  .then(data => setScreenResults(prev => ({ ...prev, [ticker]: data })))
+                  .catch(() => setScreenResults(prev => ({ ...prev, [ticker]: "error" })));
+              }}
+              onRemove={async (ticker) => {
+                await fetch(`${API_BASE}/portfolio/${encodeURIComponent(ticker)}`, {
+                  method: "DELETE", headers: apiHeaders(),
+                });
+                setPortfolioList(prev => prev.filter(p => p.ticker !== ticker));
+                setScreenResults(prev => { const n = { ...prev }; delete n[ticker]; return n; });
+              }}
+            />
+          )}
 
           {activeTab === "stocks" && <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
 
