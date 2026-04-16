@@ -42,7 +42,7 @@ limiter = Limiter(key_func=get_remote_address, default_limits=["120/minute"])
 
 # ─── Database ─────────────────────────────────────────────────────────────────
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "watchlist.db")
+DB_PATH = os.getenv("MARKETLENS_DB", os.path.join(os.path.dirname(__file__), "watchlist.db"))
 
 
 def get_db():
@@ -55,6 +55,13 @@ def init_db():
     with get_db() as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS watchlist (
+                ticker  TEXT PRIMARY KEY,
+                name    TEXT NOT NULL,
+                added_at TEXT DEFAULT (datetime('now'))
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS portfolio (
                 ticker  TEXT PRIMARY KEY,
                 name    TEXT NOT NULL,
                 added_at TEXT DEFAULT (datetime('now'))
@@ -336,6 +343,36 @@ def remove_from_watchlist(ticker: str = Path(..., max_length=20)):
     sym = _validate_ticker_param(ticker)
     with get_db() as conn:
         conn.execute("DELETE FROM watchlist WHERE ticker = ?", (sym,))
+        conn.commit()
+    return {"removed": sym}
+
+
+@app.get("/portfolio")
+def get_portfolio():
+    """Return all portfolio items ordered by when they were added."""
+    with get_db() as conn:
+        rows = conn.execute("SELECT ticker, name FROM portfolio ORDER BY added_at").fetchall()
+    return {"items": [{"ticker": r["ticker"], "name": r["name"]} for r in rows]}
+
+
+@app.post("/portfolio", status_code=201)
+def add_to_portfolio(item: WatchlistItem):
+    """Add a ticker to the portfolio. Silently ignores duplicates."""
+    with get_db() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO portfolio (ticker, name) VALUES (?, ?)",
+            (item.ticker, item.name),
+        )
+        conn.commit()
+    return {"ticker": item.ticker, "name": item.name}
+
+
+@app.delete("/portfolio/{ticker}", status_code=200)
+def remove_from_portfolio(ticker: str = Path(..., max_length=20)):
+    """Remove a ticker from the portfolio."""
+    sym = _validate_ticker_param(ticker)
+    with get_db() as conn:
+        conn.execute("DELETE FROM portfolio WHERE ticker = ?", (sym,))
         conn.commit()
     return {"removed": sym}
 
