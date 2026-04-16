@@ -97,6 +97,29 @@ TIMEFRAME_MAP = {
     "1y":  {"period": "1y",   "interval": "1d"},
 }
 
+# ─── Portfolio screening thresholds ──────────────────────────────────────────
+
+SHORT_INTEREST_HIGH = 10.0    # red above 10% (percent units)
+SHORT_INTEREST_WARN = 5.0     # yellow above 5%
+AVG_VOLUME_LOW      = 1_000_000   # red below 1M shares/day
+AVG_VOLUME_WARN     = 5_000_000   # yellow below 5M shares/day
+EARNINGS_WARN_DAYS  = 14      # yellow if earnings within 14 days
+EXDIV_ALERT_DAYS    = 30      # show badge if ex-div within 30 days
+
+
+def _compute_golden_cross(close_prices: list) -> tuple:
+    """
+    Given a chronological list of closing prices, compute 50/200-day MA cross.
+    Returns (golden_cross: bool, ma_50: float, ma_200: float).
+    Returns (None, None, None) if fewer than 200 data points.
+    """
+    if len(close_prices) < 200:
+        return None, None, None
+    ma_50 = sum(close_prices[-50:]) / 50
+    ma_200 = sum(close_prices[-200:]) / 200
+    return ma_50 > ma_200, round(ma_50, 2), round(ma_200, 2)
+
+
 _TICKER_PATTERN = re.compile(r'^[\^A-Za-z0-9.\-=]{1,20}$')
 
 
@@ -375,6 +398,112 @@ def remove_from_portfolio(ticker: str = Path(..., max_length=20)):
         conn.execute("DELETE FROM portfolio WHERE ticker = ?", (sym,))
         conn.commit()
     return {"removed": sym}
+
+
+@app.get("/screen/{ticker}")
+def screen_ticker(ticker: str = Path(..., max_length=20)):
+    """Return all screening data for a ticker: short interest, volume, insider, golden cross, dates."""
+    sym = _validate_ticker_param(ticker)
+    try:
+        tk = yf.Ticker(sym)
+        info = tk.info or {}
+        result: dict = {"ticker": sym}
+
+        # Current price
+        try:
+            fi = tk.fast_info
+            price = getattr(fi, "last_price", None)
+            result["current_price"] = round(float(price), 4) if price else None
+        except Exception:
+            result["current_price"] = None
+
+        # Short interest (yfinance returns decimal e.g. 0.008 for 0.8%)
+        try:
+            sif = info.get("shortPercentOfFloat")
+            result["short_interest_pct"] = round(float(sif) * 100, 2) if sif is not None else None
+        except Exception:
+            result["short_interest_pct"] = None
+
+        # Average daily volume
+        try:
+            av = info.get("averageVolume")
+            result["avg_volume"] = int(av) if av is not None else None
+        except Exception:
+            result["avg_volume"] = None
+
+        # Insider transactions — count buys vs sells in most recent 20 transactions
+        try:
+            df = tk.insider_transactions
+            if df is not None and not df.empty:
+                recent = df.head(20)
+                tx_col = next(
+                    (c for c in recent.columns if "transaction" in c.lower() or "trade" in c.lower()),
+                    None
+                )
+                if tx_col:
+                    buys = int(recent[tx_col].str.contains(r"Purchase|Buy", case=False, na=False, regex=True).sum())
+                    sells = int(recent[tx_col].str.contains(r"Sale|Sell", case=False, na=False, regex=True).sum())
+                else:
+                    buys, sells = 0, 0
+                result["insider_buys"] = buys
+                result["insider_sells"] = sells
+                result["insider_net"] = buys - sells
+            else:
+                result["insider_buys"] = None
+                result["insider_sells"] = None
+                result["insider_net"] = None
+        except Exception:
+            result["insider_buys"] = None
+            result["insider_sells"] = None
+            result["insider_net"] = None
+
+        # Golden cross: 50MA vs 200MA from 1y price history
+        try:
+            hist = tk.history(period="1y")
+            closes = hist["Close"].tolist() if not hist.empty else []
+            golden, ma50, ma200 = _compute_golden_cross(closes)
+            result["golden_cross"] = golden
+            result["ma_50"] = ma50
+            result["ma_200"] = ma200
+        except Exception:
+            result["golden_cross"] = None
+            result["ma_50"] = None
+            result["ma_200"] = None
+
+        # Earnings date
+        try:
+            cal = tk.calendar
+            earnings_date = None
+            if isinstance(cal, dict):
+                ed = cal.get("Earnings Date")
+                if isinstance(ed, list) and ed:
+                    ed = ed[0]
+                if ed is not None and hasattr(ed, "strftime"):
+                    earnings_date = ed.strftime("%Y-%m-%d")
+            elif hasattr(cal, "columns") and "Earnings Date" in cal.columns:
+                ed = cal["Earnings Date"].iloc[0]
+                if hasattr(ed, "strftime"):
+                    earnings_date = ed.strftime("%Y-%m-%d")
+            result["earnings_date"] = earnings_date
+        except Exception:
+            result["earnings_date"] = None
+
+        # Ex-dividend date
+        try:
+            exd = info.get("exDividendDate")
+            result["ex_dividend_date"] = (
+                datetime.fromtimestamp(int(exd)).strftime("%Y-%m-%d") if exd else None
+            )
+        except Exception:
+            result["ex_dividend_date"] = None
+
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"/screen/{sym}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch screening data")
 
 
 @app.get("/chart/{ticker}/all")
