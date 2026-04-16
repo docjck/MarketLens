@@ -443,11 +443,13 @@ def screen_ticker(ticker: str = Path(..., max_length=20)):
                 if tx_col:
                     buys = int(recent[tx_col].str.contains(r"Purchase|Buy", case=False, na=False, regex=True).sum())
                     sells = int(recent[tx_col].str.contains(r"Sale|Sell", case=False, na=False, regex=True).sum())
+                    result["insider_buys"] = buys
+                    result["insider_sells"] = sells
+                    result["insider_net"] = buys - sells
                 else:
-                    buys, sells = 0, 0
-                result["insider_buys"] = buys
-                result["insider_sells"] = sells
-                result["insider_net"] = buys - sells
+                    result["insider_buys"] = None
+                    result["insider_sells"] = None
+                    result["insider_net"] = None
             else:
                 result["insider_buys"] = None
                 result["insider_sells"] = None

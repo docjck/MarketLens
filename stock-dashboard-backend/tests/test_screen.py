@@ -46,15 +46,17 @@ def test_screen_invalid_ticker_rejected():
     assert r.status_code == 400
 
 
+@pytest.mark.skipif(
+    os.getenv("RUN_INTEGRATION_TESTS") != "1",
+    reason="Set RUN_INTEGRATION_TESTS=1 to run integration tests requiring network"
+)
 def test_screen_response_shape():
-    """Integration test — requires network. Skipped if yfinance unavailable."""
+    """Integration test — requires network access to yfinance."""
     from fastapi.testclient import TestClient
     from main import app
     client = TestClient(app)
     r = client.get("/screen/AAPL")
-    if r.status_code == 500:
-        pytest.skip("yfinance network unavailable")
-    assert r.status_code == 200
+    assert r.status_code == 200, f"Expected 200, got {r.status_code}: {r.text}"
     data = r.json()
     required_keys = [
         "ticker", "current_price", "short_interest_pct", "avg_volume",
