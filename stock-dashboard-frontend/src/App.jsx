@@ -1582,7 +1582,7 @@ export default function App() {
                   >
                     <svg width="20" height="16" viewBox="0 0 20 16" fill="none">
                       <line x1="5" y1="1" x2="5" y2="4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-                      <rect x="3" y="4" width="4" height="6" rx="0.5" fill="currentColor"/>
+                      <rect x="3" y="4" width="4" height="6" rx="0.5" fill="currentColor" opacity="0.7"/>
                       <line x1="5" y1="10" x2="5" y2="14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
                       <line x1="15" y1="2" x2="15" y2="5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
                       <rect x="13" y="5" width="4" height="6" rx="0.5" fill="none" stroke="currentColor" strokeWidth="1"/>

@@ -257,11 +257,12 @@ def get_fundamentals(ticker: str = Path(..., max_length=20)):
         except Exception:
             pass
 
+        dy = float(dividend_yield) if dividend_yield else None
         return {
             "ticker":             sym,
             "trailing_pe":        round(float(trailing_pe), 2)     if trailing_pe    else None,
             "forward_pe":         round(float(forward_pe), 2)      if forward_pe     else None,
-            "dividend_yield":     round(float(dividend_yield) if float(dividend_yield) > 1 else float(dividend_yield)*100, 2) if dividend_yield else None,
+            "dividend_yield":     round(dy if dy > 1 else dy * 100, 2) if dy else None,
             "dividend_rate":      round(float(dividend_rate), 4)   if dividend_rate  else None,
             "ex_dividend_date":   ts_to_date(ex_div_ts)            if ex_div_ts      else None,
             "last_dividend_value": round(float(last_div_value), 4) if last_div_value else None,
@@ -539,9 +540,9 @@ def get_prices(request: Request, tickers: str = ""):
             fi = yf.Ticker(sym).fast_info
             last = getattr(fi, "last_price", None)
             prev = getattr(fi, "previous_close", None)
-            if not isinstance(last, (int, float)) or math.isnan(last):
+            if not isinstance(last, float) or math.isnan(last):
                 last = None
-            if not isinstance(prev, (int, float)) or math.isnan(prev):
+            if not isinstance(prev, float) or math.isnan(prev):
                 prev = None
             return sym, _compute_pct_change(last, prev)
         except Exception:

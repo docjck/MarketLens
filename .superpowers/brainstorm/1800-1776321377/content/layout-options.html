@@ -1,0 +1,97 @@
+<h2>How should stocks be displayed in the Portfolio tab?</h2>
+<p class="subtitle">Each approach handles the screening checks differently. Pick the layout that feels right.</p>
+
+<div class="cards">
+
+  <div class="card" data-choice="table" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding: 12px; background: #0a0f1e; border-radius: 6px; font-family: 'IBM Plex Mono', monospace; font-size: 11px;">
+      <div style="display:grid; grid-template-columns: 80px 60px 70px 70px 70px 70px 70px; gap:4px; color:#475569; margin-bottom:6px; font-size:10px; text-transform:uppercase;">
+        <span>Ticker</span><span>Price</span><span>Short %</span><span>Avg Vol</span><span>Insider</span><span>Earnings</span><span>Signal</span>
+      </div>
+      <div style="display:grid; grid-template-columns: 80px 60px 70px 70px 70px 70px 70px; gap:4px; color:#e2e8f0; padding: 5px 0; border-top: 1px solid #1e293b;">
+        <span style="color:#00ff88">AAPL</span><span>$213.40</span><span style="color:#00ff88">0.8%</span><span>68M</span><span style="color:#00ff88">+Buy</span><span>Jul 30</span><span style="color:#00ff88">✓ Cross</span>
+      </div>
+      <div style="display:grid; grid-template-columns: 80px 60px 70px 70px 70px 70px 70px; gap:4px; color:#e2e8f0; padding: 5px 0; border-top: 1px solid #1e293b;">
+        <span style="color:#00ff88">NVDA</span><span>$118.20</span><span style="color:#ef4444">12.3%</span><span>280M</span><span style="color:#94a3b8">—</span><span>Aug 21</span><span style="color:#94a3b8">—</span>
+      </div>
+      <div style="display:grid; grid-template-columns: 80px 60px 70px 70px 70px 70px 70px; gap:4px; color:#e2e8f0; padding: 5px 0; border-top: 1px solid #1e293b;">
+        <span style="color:#00ff88">MSFT</span><span>$422.10</span><span style="color:#00ff88">0.6%</span><span>22M</span><span style="color:#ef4444">-Sell</span><span>Oct 23</span><span style="color:#94a3b8">—</span>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>A — Compact Table</h3>
+      <p>All stocks in a dense grid. Every check is a column. Scan many names at once. Best for 10+ stocks.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="cards" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding: 12px; background: #0a0f1e; border-radius: 6px; font-family: 'IBM Plex Mono', monospace; font-size: 11px;">
+      <div style="display:flex; gap:8px;">
+        <div style="flex:1; background:#0f172a; border-radius:6px; border:1px solid #1e293b; padding:10px;">
+          <div style="color:#00ff88; font-size:13px; font-weight:bold; margin-bottom:2px;">AAPL</div>
+          <div style="color:#94a3b8; font-size:10px; margin-bottom:8px;">Apple Inc.</div>
+          <div style="display:flex; flex-wrap:wrap; gap:4px;">
+            <span style="background:#052e16; color:#00ff88; padding:2px 6px; border-radius:3px; font-size:9px;">SHORT 0.8%</span>
+            <span style="background:#052e16; color:#00ff88; padding:2px 6px; border-radius:3px; font-size:9px;">+BUY INSIDER</span>
+            <span style="background:#052e16; color:#00ff88; padding:2px 6px; border-radius:3px; font-size:9px;">GOLDEN X</span>
+          </div>
+          <div style="color:#475569; font-size:9px; margin-top:6px;">Earnings: Jul 30 · Ex-Div: Aug 9</div>
+        </div>
+        <div style="flex:1; background:#0f172a; border-radius:6px; border:1px solid #1e293b; padding:10px;">
+          <div style="color:#00ff88; font-size:13px; font-weight:bold; margin-bottom:2px;">NVDA</div>
+          <div style="color:#94a3b8; font-size:10px; margin-bottom:8px;">NVIDIA Corp.</div>
+          <div style="display:flex; flex-wrap:wrap; gap:4px;">
+            <span style="background:#450a0a; color:#ef4444; padding:2px 6px; border-radius:3px; font-size:9px;">SHORT 12.3% ⚠</span>
+            <span style="background:#1e293b; color:#94a3b8; padding:2px 6px; border-radius:3px; font-size:9px;">VOL OK</span>
+          </div>
+          <div style="color:#475569; font-size:9px; margin-top:6px;">Earnings: Aug 21 · No dividend</div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B — Stock Cards</h3>
+      <p>One card per stock with colored flag badges. Flags highlight problems/opportunities at a glance. Better for 5–10 stocks.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="hybrid" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding: 12px; background: #0a0f1e; border-radius: 6px; font-family: 'IBM Plex Mono', monospace; font-size: 11px;">
+      <div style="display:grid; grid-template-columns: 90px 55px 1fr 60px; gap:6px; color:#475569; margin-bottom:4px; font-size:10px; text-transform:uppercase;">
+        <span>Ticker</span><span>Price</span><span>Flags</span><span>Next</span>
+      </div>
+      <div style="display:grid; grid-template-columns: 90px 55px 1fr 60px; gap:6px; color:#e2e8f0; padding:5px 0; border-top:1px solid #1e293b; align-items:center;">
+        <span style="color:#00ff88; font-weight:bold;">AAPL</span>
+        <span>$213</span>
+        <div style="display:flex;gap:3px;flex-wrap:wrap;">
+          <span style="background:#052e16;color:#00ff88;padding:1px 5px;border-radius:3px;font-size:9px;">SHORT✓</span>
+          <span style="background:#052e16;color:#00ff88;padding:1px 5px;border-radius:3px;font-size:9px;">BUY</span>
+          <span style="background:#052e16;color:#00ff88;padding:1px 5px;border-radius:3px;font-size:9px;">GOLDEN✓</span>
+        </div>
+        <span style="color:#475569;font-size:10px;">Jul 30</span>
+      </div>
+      <div style="display:grid; grid-template-columns: 90px 55px 1fr 60px; gap:6px; color:#e2e8f0; padding:5px 0; border-top:1px solid #1e293b; align-items:center;">
+        <span style="color:#00ff88; font-weight:bold;">NVDA</span>
+        <span>$118</span>
+        <div style="display:flex;gap:3px;flex-wrap:wrap;">
+          <span style="background:#450a0a;color:#ef4444;padding:1px 5px;border-radius:3px;font-size:9px;">SHORT⚠</span>
+          <span style="background:#1e293b;color:#94a3b8;padding:1px 5px;border-radius:3px;font-size:9px;">VOL OK</span>
+        </div>
+        <span style="color:#475569;font-size:10px;">Aug 21</span>
+      </div>
+      <div style="display:grid; grid-template-columns: 90px 55px 1fr 60px; gap:6px; color:#e2e8f0; padding:5px 0; border-top:1px solid #1e293b; align-items:center;">
+        <span style="color:#00ff88; font-weight:bold;">MSFT</span>
+        <span>$422</span>
+        <div style="display:flex;gap:3px;flex-wrap:wrap;">
+          <span style="background:#052e16;color:#00ff88;padding:1px 5px;border-radius:3px;font-size:9px;">SHORT✓</span>
+          <span style="background:#450a0a;color:#ef4444;padding:1px 5px;border-radius:3px;font-size:9px;">SELL⚠</span>
+        </div>
+        <span style="color:#475569;font-size:10px;">Oct 23</span>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>C — Hybrid Row + Badges</h3>
+      <p>Compact rows like a table, but checks shown as colored badges instead of raw numbers. Click a row to expand full details. Best of both worlds.</p>
+    </div>
+  </div>
+
+</div>

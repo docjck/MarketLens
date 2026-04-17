@@ -1,0 +1,128 @@
+<h2>Portfolio Tab — Layout Mockup</h2>
+<p class="subtitle">Hybrid rows with badge flags, click-to-expand details. Does this feel right?</p>
+
+<div class="mockup">
+  <div class="mockup-header">📊 PORTFOLIO TAB</div>
+  <div class="mockup-body" style="font-family:'IBM Plex Mono',monospace;font-size:11px;background:#050810;padding:16px;border-radius:6px;">
+
+    <!-- Tab bar -->
+    <div style="display:flex;gap:8px;margin-bottom:16px;">
+      <button style="background:#0f172a;color:#475569;border:1px solid #1e293b;padding:6px 16px;border-radius:4px;font-family:Syne,sans-serif;font-size:11px;cursor:pointer;">📈 STOCKS</button>
+      <button style="background:#0f172a;color:#00ff88;border:1px solid #00ff88;padding:6px 16px;border-radius:4px;font-family:Syne,sans-serif;font-size:11px;cursor:pointer;">📊 PORTFOLIO</button>
+      <button style="background:#0f172a;color:#475569;border:1px solid #1e293b;padding:6px 16px;border-radius:4px;font-family:Syne,sans-serif;font-size:11px;cursor:pointer;">🏒 ICE EDGE</button>
+    </div>
+
+    <!-- Add stock bar -->
+    <div style="display:flex;gap:8px;margin-bottom:16px;align-items:center;">
+      <input placeholder="Add ticker or company name..." style="flex:1;background:#0f172a;border:1px solid #1e293b;color:#e2e8f0;padding:7px 12px;border-radius:4px;font-family:'IBM Plex Mono',monospace;font-size:11px;" />
+      <button style="background:#052e16;color:#00ff88;border:1px solid #00ff88;padding:7px 14px;border-radius:4px;font-family:Syne,sans-serif;font-size:11px;">+ ADD</button>
+      <button style="background:#0f172a;color:#475569;border:1px solid #1e293b;padding:7px 14px;border-radius:4px;font-family:Syne,sans-serif;font-size:11px;">↑ FROM WATCHLIST</button>
+    </div>
+
+    <!-- Column headers -->
+    <div style="display:grid;grid-template-columns:80px 65px 1fr 90px 18px;gap:8px;color:#334155;font-size:10px;text-transform:uppercase;padding:0 8px;margin-bottom:4px;">
+      <span>Ticker</span><span>Price</span><span>Signals</span><span>Next Event</span><span></span>
+    </div>
+
+    <!-- Row 1 — AAPL, expanded -->
+    <div style="background:#0f172a;border:1px solid #00ff8822;border-radius:6px;margin-bottom:6px;">
+      <div style="display:grid;grid-template-columns:80px 65px 1fr 90px 18px;gap:8px;padding:9px 8px;align-items:center;cursor:pointer;">
+        <span style="color:#00ff88;font-weight:bold;font-size:12px;">AAPL</span>
+        <span style="color:#e2e8f0;">$213.40</span>
+        <div style="display:flex;gap:4px;flex-wrap:wrap;">
+          <span style="background:#052e16;color:#00ff88;padding:2px 6px;border-radius:3px;font-size:9px;border:1px solid #00ff8844;">SHORT 0.8% ✓</span>
+          <span style="background:#052e16;color:#00ff88;padding:2px 6px;border-radius:3px;font-size:9px;border:1px solid #00ff8844;">VOL 68M ✓</span>
+          <span style="background:#052e16;color:#00ff88;padding:2px 6px;border-radius:3px;font-size:9px;border:1px solid #00ff8844;">INSIDER +BUY</span>
+          <span style="background:#052e16;color:#00ff88;padding:2px 6px;border-radius:3px;font-size:9px;border:1px solid #00ff8844;">GOLDEN ✓</span>
+        </div>
+        <span style="color:#f59e0b;font-size:10px;">EARN Jul 30 ⚠</span>
+        <span style="color:#475569;">▾</span>
+      </div>
+      <!-- Expanded detail -->
+      <div style="border-top:1px solid #1e293b;padding:10px 8px;display:grid;grid-template-columns:repeat(3,1fr);gap:10px;">
+        <div>
+          <div style="color:#475569;font-size:9px;text-transform:uppercase;margin-bottom:3px;">Short Interest</div>
+          <div style="color:#00ff88;">0.8% of float</div>
+          <div style="color:#334155;font-size:9px;">threshold &lt; 5%</div>
+        </div>
+        <div>
+          <div style="color:#475569;font-size:9px;text-transform:uppercase;margin-bottom:3px;">Avg Daily Volume</div>
+          <div style="color:#00ff88;">68.2M shares</div>
+          <div style="color:#334155;font-size:9px;">threshold &gt; 5M</div>
+        </div>
+        <div>
+          <div style="color:#475569;font-size:9px;text-transform:uppercase;margin-bottom:3px;">Insider (90d)</div>
+          <div style="color:#00ff88;">+4 buys, 1 sell</div>
+          <div style="color:#334155;font-size:9px;">net bullish</div>
+        </div>
+        <div>
+          <div style="color:#475569;font-size:9px;text-transform:uppercase;margin-bottom:3px;">Golden Cross</div>
+          <div style="color:#00ff88;">50MA $209 &gt; 200MA $197</div>
+          <div style="color:#334155;font-size:9px;">bullish signal</div>
+        </div>
+        <div>
+          <div style="color:#475569;font-size:9px;text-transform:uppercase;margin-bottom:3px;">Next Earnings</div>
+          <div style="color:#f59e0b;">Jul 30 (14 days)</div>
+          <div style="color:#334155;font-size:9px;">within warning window</div>
+        </div>
+        <div>
+          <div style="color:#475569;font-size:9px;text-transform:uppercase;margin-bottom:3px;">Ex-Dividend</div>
+          <div style="color:#e2e8f0;">Aug 9</div>
+          <div style="color:#334155;font-size:9px;">upcoming</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Row 2 — NVDA, collapsed, warning -->
+    <div style="background:#0f172a;border:1px solid #1e293b;border-radius:6px;margin-bottom:6px;">
+      <div style="display:grid;grid-template-columns:80px 65px 1fr 90px 18px;gap:8px;padding:9px 8px;align-items:center;cursor:pointer;">
+        <span style="color:#00ff88;font-weight:bold;font-size:12px;">NVDA</span>
+        <span style="color:#e2e8f0;">$118.20</span>
+        <div style="display:flex;gap:4px;flex-wrap:wrap;">
+          <span style="background:#450a0a;color:#ef4444;padding:2px 6px;border-radius:3px;font-size:9px;border:1px solid #ef444444;">SHORT 12.3% ⚠</span>
+          <span style="background:#052e16;color:#00ff88;padding:2px 6px;border-radius:3px;font-size:9px;border:1px solid #00ff8844;">VOL 280M ✓</span>
+          <span style="background:#1e293b;color:#94a3b8;padding:2px 6px;border-radius:3px;font-size:9px;">NO INSIDER</span>
+          <span style="background:#1e293b;color:#94a3b8;padding:2px 6px;border-radius:3px;font-size:9px;">CROSS —</span>
+        </div>
+        <span style="color:#475569;font-size:10px;">EARN Aug 21</span>
+        <span style="color:#475569;">▸</span>
+      </div>
+    </div>
+
+    <!-- Row 3 — MSFT, collapsed, sell warning -->
+    <div style="background:#0f172a;border:1px solid #1e293b;border-radius:6px;margin-bottom:6px;">
+      <div style="display:grid;grid-template-columns:80px 65px 1fr 90px 18px;gap:8px;padding:9px 8px;align-items:center;cursor:pointer;">
+        <span style="color:#00ff88;font-weight:bold;font-size:12px;">MSFT</span>
+        <span style="color:#e2e8f0;">$422.10</span>
+        <div style="display:flex;gap:4px;flex-wrap:wrap;">
+          <span style="background:#052e16;color:#00ff88;padding:2px 6px;border-radius:3px;font-size:9px;border:1px solid #00ff8844;">SHORT 0.6% ✓</span>
+          <span style="background:#1e293b;color:#f59e0b;padding:2px 6px;border-radius:3px;font-size:9px;border:1px solid #f59e0b44;">VOL 2.1M ⚡</span>
+          <span style="background:#450a0a;color:#ef4444;padding:2px 6px;border-radius:3px;font-size:9px;border:1px solid #ef444444;">INSIDER -SELL</span>
+          <span style="background:#052e16;color:#00ff88;padding:2px 6px;border-radius:3px;font-size:9px;border:1px solid #00ff8844;">GOLDEN ✓</span>
+        </div>
+        <span style="color:#475569;font-size:10px;">EARN Oct 23</span>
+        <span style="color:#475569;">▸</span>
+      </div>
+    </div>
+
+    <!-- Loading row -->
+    <div style="background:#0f172a;border:1px solid #1e293b;border-radius:6px;margin-bottom:6px;">
+      <div style="display:grid;grid-template-columns:80px 65px 1fr 90px 18px;gap:8px;padding:9px 8px;align-items:center;">
+        <span style="color:#00ff88;font-weight:bold;font-size:12px;">META</span>
+        <span style="color:#e2e8f0;">$592.30</span>
+        <div style="display:flex;gap:4px;">
+          <div style="height:18px;width:70px;background:#1e293b;border-radius:3px;animation:pulse 1.5s infinite;"></div>
+          <div style="height:18px;width:60px;background:#1e293b;border-radius:3px;animation:pulse 1.5s infinite;animation-delay:0.2s"></div>
+          <div style="height:18px;width:80px;background:#1e293b;border-radius:3px;animation:pulse 1.5s infinite;animation-delay:0.4s"></div>
+        </div>
+        <div style="height:14px;width:60px;background:#1e293b;border-radius:3px;animation:pulse 1.5s infinite;"></div>
+        <span style="color:#475569;">▸</span>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<style>
+@keyframes pulse { 0%,100%{opacity:0.4} 50%{opacity:0.8} }
+</style>
