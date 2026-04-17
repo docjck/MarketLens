@@ -3,6 +3,7 @@ load_dotenv()
 
 import re
 import os
+import math
 from urllib.parse import unquote
 import sqlite3
 import logging
@@ -18,6 +19,8 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 import yfinance as yf
 import requests as req_lib
+
+from concurrent.futures import ThreadPoolExecutor, wait as futures_wait
 
 from nhl_router import router as nhl_router
 
@@ -95,6 +98,7 @@ TIMEFRAME_MAP = {
     "5d":  {"period": "5d",   "interval": "30m"},
     "6m":  {"period": "6mo",  "interval": "1d"},
     "1y":  {"period": "1y",   "interval": "1d"},
+    "5y":  {"period": "5y",   "interval": "1wk"},
 }
 
 # ─── Portfolio screening thresholds ──────────────────────────────────────────
@@ -131,6 +135,13 @@ def _validate_ticker_param(ticker: str) -> str:
     return ticker.upper()
 
 
+def _compute_pct_change(last_price, previous_close):
+    """Return % change from previous close, or None if data is unavailable."""
+    if last_price is None or previous_close is None or previous_close == 0:
+        return None
+    return round((last_price - previous_close) / previous_close * 100, 2)
+
+
 def fetch_stock_data(ticker: str, period: str, interval: str) -> list:
     """Fetch OHLCV data from yfinance and return as a list of dicts."""
     try:
@@ -141,7 +152,7 @@ def fetch_stock_data(ticker: str, period: str, interval: str) -> list:
             raise ValueError(f"No data returned for ticker '{ticker}'")
 
         df = df.reset_index()
-        is_intraday = interval == "5m"
+        is_intraday = interval.endswith("m") or interval.endswith("h")
         date_col = "Datetime" if is_intraday else "Date"
         if is_intraday:
             df[date_col] = df[date_col].dt.strftime("%Y-%m-%dT%H:%M")
@@ -506,6 +517,49 @@ def screen_ticker(ticker: str = Path(..., max_length=20)):
     except Exception as e:
         logger.error(f"/screen/{sym}: {e}")
         raise HTTPException(status_code=500, detail="Failed to fetch screening data")
+
+
+@app.get("/prices")
+@limiter.limit("10/minute")
+def get_prices(request: Request, tickers: str = ""):
+    """Return % change from previous close for a batch of tickers."""
+    if not tickers:
+        return {}
+
+    raw = [t.strip() for t in tickers.split(",") if t.strip()]
+    valid = [t.upper() for t in raw if _TICKER_PATTERN.match(t)][:50]
+
+    if not valid:
+        return {}
+
+    result = {}
+
+    def fetch_one(sym):
+        try:
+            fi = yf.Ticker(sym).fast_info
+            last = getattr(fi, "last_price", None)
+            prev = getattr(fi, "previous_close", None)
+            if not isinstance(last, (int, float)) or math.isnan(last):
+                last = None
+            if not isinstance(prev, (int, float)) or math.isnan(prev):
+                prev = None
+            return sym, _compute_pct_change(last, prev)
+        except Exception:
+            return sym, None
+
+    executor = ThreadPoolExecutor(max_workers=20)
+    futures_map = {executor.submit(fetch_one, sym): sym for sym in valid}
+    done, not_done = futures_wait(futures_map, timeout=8)
+    executor.shutdown(wait=False)
+
+    for f in done:
+        sym, pct = f.result()
+        result[sym] = pct
+
+    for f in not_done:
+        result[futures_map[f]] = None
+
+    return result
 
 
 @app.get("/chart/{ticker}/all")

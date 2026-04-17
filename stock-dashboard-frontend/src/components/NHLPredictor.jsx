@@ -1,6 +1,7 @@
 // NHLPredictor.jsx — NHL model predictions vs market odds
 
 import { useState, useEffect } from "react";
+import { LineChart, Line, XAxis, YAxis, Tooltip, ReferenceLine, ResponsiveContainer } from "recharts";
 
 const API_BASE = "/api";
 const API_TOKEN = import.meta.env.VITE_API_TOKEN || "";
@@ -315,6 +316,16 @@ function HistoryPickRow({ pick }) {
         <div style={{ fontSize: 9, color: "#334155", marginTop: 2, letterSpacing: 1 }}>EDGE</div>
       </div>
 
+      {/* Unit result */}
+      {pick.unit_result != null && (
+        <span style={{
+          fontFamily: "'IBM Plex Mono', monospace", fontSize: 10,
+          color: pick.unit_result > 0 ? "#00ff88" : "#ef4444", marginLeft: 8,
+        }}>
+          {pick.unit_result > 0 ? "+" : ""}{pick.unit_result.toFixed(2)}u
+        </span>
+      )}
+
       {/* Time */}
       <div style={{ flexShrink: 0, fontSize: 10, color: "#334155", textAlign: "right", minWidth: 60 }}>
         {formatTime(pick.start_utc)}
@@ -377,6 +388,56 @@ function DaySection({ day }) {
   );
 }
 
+// ─── P&L Chart ────────────────────────────────────────────────────────────────
+
+function PLChart({ data }) {
+  // data: [{ date: "2026-03-20", cumulative: 1.43 }, ...]
+  if (!data || data.length < 2) return null;
+
+  const netUnits = data[data.length - 1]?.cumulative ?? 0;
+  const color    = netUnits >= 0 ? "#00ff88" : "#ef4444";
+
+  return (
+    <div style={{ marginTop: 16 }}>
+      <div style={{
+        fontFamily: "'IBM Plex Mono', monospace", fontSize: 9,
+        color: "#334155", letterSpacing: 2, marginBottom: 8,
+      }}>
+        CUMULATIVE UNITS P&L
+      </div>
+      <ResponsiveContainer width="100%" height={120}>
+        <LineChart data={data} margin={{ top: 4, right: 8, bottom: 0, left: -20 }}>
+          <XAxis
+            dataKey="date"
+            tick={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 9, fill: "#334155" }}
+            axisLine={false} tickLine={false}
+            tickFormatter={d => d.slice(5)}
+          />
+          <YAxis
+            tick={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 9, fill: "#334155" }}
+            axisLine={false} tickLine={false}
+            tickFormatter={v => `${v > 0 ? "+" : ""}${v.toFixed(1)}u`}
+          />
+          <ReferenceLine y={0} stroke="rgba(255,255,255,0.08)" strokeDasharray="4 4" />
+          <Tooltip
+            contentStyle={{
+              background: "#0d1424", border: "1px solid rgba(255,255,255,0.10)",
+              borderRadius: 8, fontFamily: "'IBM Plex Mono', monospace", fontSize: 11,
+            }}
+            labelStyle={{ color: "#475569", fontSize: 10 }}
+            formatter={(v) => [`${v > 0 ? "+" : ""}${v.toFixed(2)}u`, "Net units"]}
+          />
+          <Line
+            type="monotone" dataKey="cumulative"
+            stroke={color} strokeWidth={2} dot={false}
+            activeDot={{ r: 3, fill: color }}
+          />
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
 // ─── Edge History ─────────────────────────────────────────────────────────────
 
 function EdgeHistory({ data, loading, error }) {
@@ -421,6 +482,16 @@ function EdgeHistory({ data, loading, error }) {
           { label: "WIN RATE",    value: winRatePct,     color: totals.win_rate != null
               ? totals.win_rate >= 0.6 ? "#00ff88" : totals.win_rate >= 0.45 ? "#f59e0b" : "#ef4444"
               : "#475569" },
+          { label: "UNITS RISKED", value: totals.units_risked ?? "—", color: "#e2e8f0" },
+          {
+            label: "NET UNITS",
+            value: totals.net_units != null
+              ? `${totals.net_units > 0 ? "+" : ""}${totals.net_units.toFixed(2)}u`
+              : "—",
+            color: totals.net_units != null
+              ? totals.net_units > 0 ? "#00ff88" : totals.net_units < 0 ? "#ef4444" : "#e2e8f0"
+              : "#475569",
+          },
         ].map(({ label, value, color }) => (
           <div key={label}>
             <div style={{ fontSize: 9, color: "#334155", letterSpacing: 2, marginBottom: 4 }}>{label}</div>
@@ -428,6 +499,8 @@ function EdgeHistory({ data, loading, error }) {
           </div>
         ))}
       </div>
+
+      <PLChart data={data?.cumulative_units} />
 
       {picks_by_date.length === 0 ? (
         <div style={{
@@ -469,7 +542,11 @@ function BacktestGameCard({ game, picks, setPicks, scored }) {
     if (scoreData) return;
     setPicks(prev => {
       const next = { ...prev };
-      if (next[gid] === side) { delete next[gid]; } else { next[gid] = side; }
+      if (next[gid]?.side === side) {
+        delete next[gid];
+      } else {
+        next[gid] = { side, home_ml: game.home_ml ?? null, away_ml: game.away_ml ?? null };
+      }
       return next;
     });
   };
@@ -557,7 +634,7 @@ function BacktestGameCard({ game, picks, setPicks, scored }) {
       {!scoreData && (
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
           {(["away", "home"]).map(side => {
-            const selected = pick === side;
+            const selected = pick?.side === side;
             const abbrev   = side === "away" ? game.away_abbrev : game.home_abbrev;
             return (
               <button key={side} onClick={() => togglePick(side)} style={{
@@ -578,8 +655,8 @@ function BacktestGameCard({ game, picks, setPicks, scored }) {
       {/* After scoring: show which team was picked */}
       {scoreData && pick && (
         <div style={{ display: "flex", justifyContent: "space-between", fontFamily: "'IBM Plex Mono', monospace", fontSize: 10, color: "#475569" }}>
-          <span>PICKED: <span style={{ color: "#94a3b8" }}>{pick === "home" ? game.home_name : game.away_name}</span></span>
-          <span style={{ color: "#334155" }}>MODEL {pct(pick === "home" ? game.model_home_prob : game.model_away_prob)}</span>
+          <span>PICKED: <span style={{ color: "#94a3b8" }}>{pick?.side === "home" ? game.home_name : game.away_name}</span></span>
+          <span style={{ color: "#334155" }}>MODEL {pct(pick?.side === "home" ? game.model_home_prob : game.model_away_prob)}</span>
         </div>
       )}
     </div>
@@ -619,6 +696,15 @@ function BacktestHistoryRow({ pick }) {
         <div style={{ fontSize: 9, color: "#334155", marginTop: 2, letterSpacing: 1 }}>
           MODEL {pct(pick.picked_team === "home" ? pick.model_h_prob : pick.model_a_prob)}
         </div>
+        {pick.unit_result != null && (
+          <div style={{
+            fontSize: 10, marginTop: 1, letterSpacing: 0.5,
+            fontFamily: "'IBM Plex Mono', monospace",
+            color: pick.unit_result > 0 ? "#00ff88" : "#ef4444",
+          }}>
+            {pick.unit_result > 0 ? "+" : ""}{pick.unit_result.toFixed(2)}u
+          </div>
+        )}
       </div>
     </div>
   );
@@ -645,6 +731,11 @@ function BacktestHistorySession({ session }) {
           {session.losses > 0 && <span style={{ color: "#ef4444" }}>{session.losses}L</span>}
           {session.pending > 0 && <span style={{ color: "#475569" }}>{session.pending} pending</span>}
           {winRate && <span style={{ color: "#94a3b8" }}>{winRate}</span>}
+          {session.net_units != null && (
+            <span style={{ color: session.net_units >= 0 ? "#00ff88" : "#ef4444" }}>
+              {session.net_units > 0 ? "+" : ""}{session.net_units.toFixed(2)}u
+            </span>
+          )}
         </span>
       </button>
       {open && (
@@ -684,6 +775,16 @@ function BacktestHistoryPanel({ data, loading, error }) {
           { label: "WIN RATE",    value: winRatePct,    color: totals.win_rate != null
               ? totals.win_rate >= 0.6 ? "#00ff88" : totals.win_rate >= 0.45 ? "#f59e0b" : "#ef4444"
               : "#475569" },
+          { label: "UNITS RISKED", value: totals.units_risked ?? "—", color: "#e2e8f0" },
+          {
+            label: "NET UNITS",
+            value: totals.net_units != null
+              ? `${totals.net_units > 0 ? "+" : ""}${totals.net_units.toFixed(2)}u`
+              : "—",
+            color: totals.net_units != null
+              ? totals.net_units > 0 ? "#00ff88" : totals.net_units < 0 ? "#ef4444" : "#e2e8f0"
+              : "#475569",
+          },
         ].map(({ label, value, color }) => (
           <div key={label}>
             <div style={{ fontSize: 9, color: "#334155", letterSpacing: 2, marginBottom: 4 }}>{label}</div>
@@ -691,6 +792,7 @@ function BacktestHistoryPanel({ data, loading, error }) {
           </div>
         ))}
       </div>
+      <PLChart data={data?.cumulative_units} />
       {sessions.length === 0 ? (
         <div style={{ textAlign: "center", padding: "48px 24px", fontFamily: "'IBM Plex Mono', monospace", fontSize: 13, color: "#334155", letterSpacing: 2 }}>
           NO BACKTEST SESSIONS YET
@@ -753,15 +855,21 @@ export default function NHLPredictor() {
 
   const scoreBtPicks = async () => {
     const picks = Object.entries(btPicks)
-      .filter(([, side]) => side !== undefined)
-      .map(([gid, side]) => {
+      .filter(([, pickData]) => pickData !== undefined)
+      .map(([gid, pickData]) => {
         const g = btGames.find(g => g.game_id === parseInt(gid));
         if (!g) return null;
         return {
-          game_id: g.game_id, picked_team: side,
-          home_name: g.home_name, away_name: g.away_name,
-          home_abbrev: g.home_abbrev, away_abbrev: g.away_abbrev,
-          model_home_prob: g.model_home_prob, model_away_prob: g.model_away_prob,
+          game_id:         parseInt(gid),
+          picked_team:     pickData.side,
+          home_name:       g.home_name,
+          away_name:       g.away_name,
+          home_abbrev:     g.home_abbrev,
+          away_abbrev:     g.away_abbrev,
+          model_home_prob: g.model_home_prob,
+          model_away_prob: g.model_away_prob,
+          home_ml:         pickData.home_ml,
+          away_ml:         pickData.away_ml,
         };
       }).filter(Boolean);
     if (!picks.length) return;

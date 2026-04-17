@@ -129,13 +129,10 @@ function CustomTooltip({ active, payload, label, timeframe }) {
 
 // ─── Volume at Price ──────────────────────────────────────────────────────────
 
-const VAP_BINS = 40;
-// Each bar is 4px tall with a 1px gap. Total track height for 40 bins:
-// 40 * (4 + 1) - 1 = 199px. We pad the container to 320px to match chart height.
-const BAR_HEIGHT = 4;
+const BAR_HEIGHT = 2;
 const BAR_GAP = 1;
 
-function computeVAP(data) {
+function computeVAP(data, bins) {
   if (!data || data.length === 0) return null;
 
   const closes = data.map(d => d.close);
@@ -144,12 +141,12 @@ function computeVAP(data) {
   const range = maxPrice - minPrice;
 
   // Avoid division by zero when all closes are identical
-  const bucketSize = range === 0 ? 1 : range / VAP_BINS;
+  const bucketSize = range === 0 ? 1 : range / bins;
 
-  const buckets = Array.from({ length: VAP_BINS }, () => ({ volume: 0, priceLevel: 0 }));
+  const buckets = Array.from({ length: bins }, () => ({ volume: 0, priceLevel: 0 }));
 
   // Label each bucket by its midpoint price
-  for (let i = 0; i < VAP_BINS; i++) {
+  for (let i = 0; i < bins; i++) {
     buckets[i].priceLevel = minPrice + (i + 0.5) * bucketSize;
   }
 
@@ -157,8 +154,8 @@ function computeVAP(data) {
   for (const bar of data) {
     if (bar.volume == null || bar.close == null) continue;
     let idx = range === 0 ? 0 : Math.floor((bar.close - minPrice) / bucketSize);
-    // Clamp: the highest close maps to index VAP_BINS, pull it back
-    if (idx >= VAP_BINS) idx = VAP_BINS - 1;
+    // Clamp: the highest close maps to index bins, pull it back
+    if (idx >= bins) idx = bins - 1;
     buckets[idx].volume += bar.volume;
   }
 
@@ -168,26 +165,48 @@ function computeVAP(data) {
 }
 
 function VolumeAtPrice({ data }) {
+  const [containerHeight, setContainerHeight] = useState(0);
+  const containerRef = useRef(null);
+
+  useEffect(() => {
+    const observer = new ResizeObserver(entries => {
+      for (const entry of entries) {
+        setContainerHeight(entry.contentRect.height);
+      }
+    });
+    if (containerRef.current) {
+      observer.observe(containerRef.current);
+    }
+    return () => observer.disconnect();
+  }, []);
+
   if (!data || data.length === 0) return null;
 
-  const vap = computeVAP(data);
+  const containerStyle = {
+    position: "absolute",
+    top: 10,       // match Recharts top margin
+    bottom: 30,    // leave room for x-axis
+    right: 16,     // match Recharts right margin
+    width: 80,
+    display: "flex",
+    flexDirection: "column",
+    gap: BAR_GAP,
+    pointerEvents: "none",
+  };
+
+  if (containerHeight === 0) {
+    return <div ref={containerRef} style={containerStyle} />;
+  }
+
+  const bins = Math.max(10, Math.floor(containerHeight / 3));
+  const vap = computeVAP(data, bins);
   if (!vap) return null;
 
   const { buckets, maxVol } = vap;
   const orderedBuckets = [...buckets].reverse();
 
   return (
-    <div style={{
-      position: "absolute",
-      top: 10,       // match Recharts top margin
-      bottom: 30,    // leave room for x-axis
-      right: 16,     // match Recharts right margin
-      width: 80,
-      display: "flex",
-      flexDirection: "column",
-      justifyContent: "space-between",
-      pointerEvents: "none",
-    }}>
+    <div ref={containerRef} style={containerStyle}>
       {orderedBuckets.map((bucket, i) => {
         const isMax = bucket.volume === maxVol && maxVol > 0;
         const widthPct = maxVol === 0 ? 0 : (bucket.volume / maxVol) * 100;
@@ -566,7 +585,7 @@ const MARKETS = [
   ]},
 ];
 
-function Markets({ activeTicker, onSelect }) {
+function Markets({ activeTicker, onSelect, prices }) {
   return (
     <div>
       {MARKETS.map(group => (
@@ -583,18 +602,31 @@ function Markets({ activeTicker, onSelect }) {
             {group.label}
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-            {group.items.map(item => (
-              <div
-                key={item.ticker}
-                className={`watchlist-item ${activeTicker === item.ticker ? "watchlist-item-active" : ""}`}
-                onClick={() => onSelect(item.ticker)}
-              >
-                <div style={{ minWidth: 0 }}>
-                  <div className="wl-ticker">{item.ticker}</div>
-                  <div className="wl-name">{item.label}</div>
+            {group.items.map(item => {
+              const pct = prices?.[item.ticker];
+              return (
+                <div
+                  key={item.ticker}
+                  className={`watchlist-item ${activeTicker === item.ticker ? "watchlist-item-active" : ""}`}
+                  onClick={() => onSelect(item.ticker)}
+                >
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <div className="wl-ticker">{item.ticker}</div>
+                    <div className="wl-name">{item.label}</div>
+                  </div>
+                  <div style={{
+                    fontFamily: "'IBM Plex Mono', monospace",
+                    fontSize: 11,
+                    fontWeight: 600,
+                    paddingLeft: 8,
+                    flexShrink: 0,
+                    color: pct == null ? "#1e293b" : pct >= 0 ? "#00ff88" : "#ef4444",
+                  }}>
+                    {pct == null ? "—" : `${pct >= 0 ? "+" : ""}${pct.toFixed(2)}%`}
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       ))}
@@ -605,7 +637,7 @@ function Markets({ activeTicker, onSelect }) {
 
 // ─── Watchlist ────────────────────────────────────────────────────────────────
 
-function Watchlist({ watchlist, activeTicker, onSelect, onRemove }) {
+function Watchlist({ watchlist, activeTicker, onSelect, onRemove, prices }) {
   if (!watchlist.length) return (
     <div className="watchlist-empty">
       <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, color: "#1e293b", letterSpacing: 1.5 }}>
@@ -615,18 +647,31 @@ function Watchlist({ watchlist, activeTicker, onSelect, onRemove }) {
   );
   return (
     <div className="watchlist">
-      {watchlist.map(item => (
-        <div key={item.ticker}
-          className={`watchlist-item ${activeTicker === item.ticker ? "watchlist-item-active" : ""}`}
-          onClick={() => onSelect(item.ticker)}
-        >
-          <div style={{ minWidth: 0 }}>
-            <div className="wl-ticker">{item.ticker}</div>
-            <div className="wl-name">{item.name}</div>
+      {watchlist.map(item => {
+        const pct = prices?.[item.ticker];
+        return (
+          <div key={item.ticker}
+            className={`watchlist-item ${activeTicker === item.ticker ? "watchlist-item-active" : ""}`}
+            onClick={() => onSelect(item.ticker)}
+          >
+            <div style={{ minWidth: 0, flex: 1 }}>
+              <div className="wl-ticker">{item.ticker}</div>
+              <div className="wl-name">{item.name}</div>
+            </div>
+            <div style={{
+              fontFamily: "'IBM Plex Mono', monospace",
+              fontSize: 11,
+              fontWeight: 600,
+              paddingLeft: 8,
+              flexShrink: 0,
+              color: pct == null ? "#1e293b" : pct >= 0 ? "#00ff88" : "#ef4444",
+            }}>
+              {pct == null ? "—" : `${pct >= 0 ? "+" : ""}${pct.toFixed(2)}%`}
+            </div>
+            <button className="wl-remove" onClick={e => { e.stopPropagation(); onRemove(item.ticker); }} title="Remove">✕</button>
           </div>
-          <button className="wl-remove" onClick={e => { e.stopPropagation(); onRemove(item.ticker); }} title="Remove">✕</button>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -1045,6 +1090,7 @@ export default function App() {
   const [loadingSuggest, setLoadingSuggest] = useState(false);
   const [fundamentals, setFundamentals] = useState(null);
   const [loadingFundamentals, setLoadingFundamentals] = useState(false);
+  const [prices, setPrices] = useState({});
   const [drawMode, setDrawMode] = useState(false);
   const [drawTool, setDrawTool] = useState("line");
   const [drawColor, setDrawColor] = useState("#f59e0b");
@@ -1053,10 +1099,38 @@ export default function App() {
     catch { return {}; }
   });
 
+  const watchlistRef = useRef(watchlist);
+  const isFetchingRef = useRef(false);
+
   // Sync localStorage cache whenever watchlist changes
   useEffect(() => {
     localStorage.setItem(WATCHLIST_KEY, JSON.stringify(watchlist));
   }, [watchlist]);
+
+  // Keep watchlistRef current so the polling closure always sees latest watchlist
+  useEffect(() => { watchlistRef.current = watchlist; }, [watchlist]);
+
+  // Fetch prices once on mount, then every 60 seconds
+  useEffect(() => {
+    const fetchPrices = () => {
+      if (isFetchingRef.current) return;
+      isFetchingRef.current = true;
+      const tickers = [
+        ...MARKETS.flatMap(g => g.items.map(i => i.ticker)),
+        ...watchlistRef.current.map(w => w.ticker),
+      ].join(",");
+      fetch(`${API_BASE}/prices?tickers=${tickers}`, { headers: apiHeaders() })
+        .then(r => r.ok ? r.json() : null)
+        .then(data => { if (data) setPrices(prev => ({ ...prev, ...data })); })
+        .catch((err) => {
+          if (import.meta.env.DEV) console.warn("[prices poll]", err);
+        })
+        .finally(() => { isFetchingRef.current = false; });
+    };
+    fetchPrices();
+    const id = setInterval(fetchPrices, 60_000);
+    return () => clearInterval(id);
+  }, []); // stable — watchlist read via ref
 
   useEffect(() => {
     localStorage.setItem("marketlens_annotations", JSON.stringify(annotations));
@@ -1323,6 +1397,7 @@ export default function App() {
         .tf-btn:hover { color: #94a3b8; }
         .tf-btn.active { background: rgba(0,255,136,0.12); color: #00ff88; }
         .tf-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+        .tf-btn.icon { padding: 5px 10px; }
         .legend { display: flex; gap: 20px; padding: 12px 8px 0; border-top: 1px solid rgba(255,255,255,0.04); margin-top: 8px; }
         .legend-item { display: flex; align-items: center; gap: 6px; font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #475569; }
         .legend-dot { width: 8px; height: 8px; border-radius: 2px; }
@@ -1364,13 +1439,14 @@ export default function App() {
       <div className="layout">
         <aside className="sidebar">
           <div className="sidebar-header">Markets</div>
-          <Markets activeTicker={ticker} onSelect={handleWatchlistSelect} />
+          <Markets activeTicker={ticker} onSelect={handleWatchlistSelect} prices={prices} />
           <div className="sidebar-header" style={{ marginTop: 16 }}>Watchlist</div>
           <Watchlist
             watchlist={watchlist}
             activeTicker={ticker}
             onSelect={handleWatchlistSelect}
             onRemove={handleRemoveFromWatchlist}
+            prices={prices}
           />
         </aside>
 
@@ -1486,11 +1562,36 @@ export default function App() {
               <div className="chart-title">{ticker ? `${ticker} — PRICE + VOLUME` : "PRICE + VOLUME"}</div>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <div className="tf-group" style={{ marginRight: 8 }}>
-                  <button className={`tf-btn ${chartType === "line" ? "active" : ""}`} onClick={() => setChartType("line")}>LINE</button>
-                  <button className={`tf-btn ${chartType === "candle" ? "active" : ""}`} onClick={() => setChartType("candle")}>CANDLE</button>
+                  <button
+                    className={`tf-btn icon ${chartType === "line" ? "active" : ""}`}
+                    onClick={() => setChartType("line")}
+                    title="Line chart"
+                    aria-label="Line chart"
+                  >
+                    <svg width="20" height="16" viewBox="0 0 20 16" fill="none">
+                      <polyline points="1,13 5,8 9,10 13,4 19,6"
+                        stroke="currentColor" strokeWidth="1.5"
+                        strokeLinejoin="round" strokeLinecap="round"/>
+                    </svg>
+                  </button>
+                  <button
+                    className={`tf-btn icon ${chartType === "candle" ? "active" : ""}`}
+                    onClick={() => setChartType("candle")}
+                    title="Candlestick"
+                    aria-label="Candlestick"
+                  >
+                    <svg width="20" height="16" viewBox="0 0 20 16" fill="none">
+                      <line x1="5" y1="1" x2="5" y2="4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                      <rect x="3" y="4" width="4" height="6" rx="0.5" fill="currentColor"/>
+                      <line x1="5" y1="10" x2="5" y2="14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                      <line x1="15" y1="2" x2="15" y2="5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                      <rect x="13" y="5" width="4" height="6" rx="0.5" fill="none" stroke="currentColor" strokeWidth="1"/>
+                      <line x1="15" y1="11" x2="15" y2="15" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                    </svg>
+                  </button>
                 </div>
                 <div className="tf-group">
-                  {["1d", "5d", "6m", "1y"].map(tf => (
+                  {["1d", "5d", "6m", "1y", "5y"].map(tf => (
                     <button key={tf} className={`tf-btn ${timeframe === tf ? "active" : ""}`}
                       onClick={() => handleTimeframe(tf)} disabled={!ticker || loadingChart}>
                       {tf.toUpperCase()}
