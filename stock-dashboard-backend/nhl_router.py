@@ -1,4 +1,4 @@
-# nhl_router.py — NHL predictions vs odds divergence
+# nhl_router.py — NHL predictions vs odds divergence (Updated for Playoffs)
 
 import math
 import os
@@ -38,6 +38,7 @@ def init_edge_picks():
             CREATE TABLE IF NOT EXISTS edge_picks (
                 game_id       INTEGER PRIMARY KEY,
                 date          TEXT NOT NULL,
+                season_type   TEXT NOT NULL DEFAULT 'regular',
                 home_abbrev   TEXT NOT NULL,
                 away_abbrev   TEXT NOT NULL,
                 home_name     TEXT NOT NULL,
@@ -55,6 +56,11 @@ def init_edge_picks():
                 saved_at      TEXT DEFAULT (datetime('now'))
             )
         """)
+        # Add season_type column if missing
+        try:
+            conn.execute("ALTER TABLE edge_picks ADD COLUMN season_type TEXT NOT NULL DEFAULT 'regular'")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
         conn.commit()
 
 
@@ -120,9 +126,26 @@ def moneyline_to_prob(ml: int) -> float:
     return abs(ml) / (abs(ml) + 100)
 
 
-def model_home_prob(home: dict, away: dict) -> float:
+def get_playoff_series_state(game: dict) -> dict | None:
+    """Extract playoff series state from game data if available."""
+    series = game.get("seriesStatus")
+    if not series:
+        return None
+    try:
+        parts = str(series).split()
+        for part in parts:
+            if "-" in part and len(part) == 3:
+                h_w, a_w = map(int, part.split("-"))
+                return {"home_wins": h_w, "away_wins": a_w}
+    except:
+        pass
+    return None
+
+
+def model_home_prob(home: dict, away: dict, series_state: dict = None) -> float:
     """
     Simple model: season win%, GF/GA differential, last-10 form, home ice.
+    For playoffs: also considers series state (momentum).
     Returns estimated home win probability clamped to [0.20, 0.80].
     """
     hw = home.get("wins", 0)
@@ -152,7 +175,34 @@ def model_home_prob(home: dict, away: dict) -> float:
     # Home ice
     h_prob += HOME_ADV
 
+    # Playoff series context: if series_state provided, adjust for series momentum
+    if series_state:
+        h_wins = series_state.get("home_wins", 0)
+        a_wins = series_state.get("away_wins", 0)
+        # Team leading in series gets +3% confidence, trailing team gets -3%
+        if h_wins > a_wins:
+            h_prob += 0.03
+        elif a_wins > h_wins:
+            h_prob -= 0.03
+
     return round(max(0.20, min(0.80, h_prob)), 4)
+
+
+def detect_season_type(schedule_data: dict) -> str:
+    """
+    Detect if games are regular season (gameType 2) or playoffs (gameType 3).
+    Returns 'regular', 'playoff', or None.
+    """
+    game_types = set()
+    for week in schedule_data.get("gameWeek", []):
+        for g in week.get("games", []):
+            game_types.add(g.get("gameType"))
+
+    if game_types == {2}:
+        return "regular"
+    elif game_types == {3}:
+        return "playoff"
+    return None
 
 
 def ml_to_units(ml: int | None, result: str, model_prob: float | None = None) -> float | None:
@@ -167,20 +217,15 @@ def ml_to_units(ml: int | None, result: str, model_prob: float | None = None) ->
         return None
     if result == "LOSS":
         return -1.0
-    # Only process WIN result; unknown results return None
     if result != "WIN":
         return None
-    # WIN result with moneyline payout
     if ml is not None:
-        # Guard against zero moneyline
         if ml == 0:
             return None
         if ml > 0:
             return round(ml / 100, 4)
         else:
             return round(100 / abs(ml), 4)
-    # Fallback: fair-value payout from model probability
-    # Clamp model_prob to [0.20, 0.80] to avoid extreme payouts
     if model_prob is not None and 0 < model_prob < 1:
         model_prob = max(0.20, min(0.80, model_prob))
         return round((1 - model_prob) / model_prob, 4)
@@ -225,9 +270,218 @@ class BacktestScoreRequest(BaseModel):
 
 # ─── Endpoints ────────────────────────────────────────────────────────────────
 
+@router.get("/predictions")
+async def get_todays_predictions():
+    """Return model predictions + live odds for today's NHL games (regular season and playoffs)."""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+        # Standings
+        try:
+            resp = await client.get(f"{NHL_BASE}/standings/now")
+            resp.raise_for_status()
+            standings_raw = resp.json().get("standings", [])
+        except Exception as e:
+            return {"error": f"Standings fetch failed: {e}", "games": [], "game_count": 0,
+                    "odds_available": False, "ou_available": False}
+
+        team_stats: dict = {}
+        for t in standings_raw:
+            abbrev = t.get("teamAbbrev", {}).get("default", "")
+            if abbrev:
+                team_stats[abbrev] = t
+
+        # Schedule
+        try:
+            resp = await client.get(f"{NHL_BASE}/schedule/{today}")
+            resp.raise_for_status()
+            schedule = resp.json()
+        except Exception as e:
+            return {"error": f"Schedule fetch failed: {e}", "games": [], "game_count": 0,
+                    "odds_available": False, "ou_available": False}
+
+        season_type = detect_season_type(schedule)
+        games_raw = []
+        for week in schedule.get("gameWeek", []):
+            for g in week.get("games", []):
+                if g.get("gameType") in (2, 3):
+                    games_raw.append(g)
+
+        # Live H2H odds
+        odds_lookup: dict = {}
+        odds_available = False
+        odds_error = None
+        if ODDS_API_KEY:
+            try:
+                odds_resp = await client.get(
+                    f"{ODDS_BASE}/sports/icehockey_nhl/odds/",
+                    params={"apiKey": ODDS_API_KEY, "regions": "us", "markets": "h2h", "oddsFormat": "american"},
+                )
+                if odds_resp.status_code == 200:
+                    for event in odds_resp.json():
+                        e_home = event.get("home_team", "")
+                        e_away = event.get("away_team", "")
+                        for book in event.get("bookmakers", [])[:1]:
+                            for market in book.get("markets", []):
+                                if market["key"] == "h2h":
+                                    mls = {o["name"]: o["price"] for o in market["outcomes"]}
+                                    odds_lookup[f"{e_home}|{e_away}"] = {
+                                        "home_team": e_home, "away_team": e_away,
+                                        "home_ml": mls.get(e_home), "away_ml": mls.get(e_away),
+                                    }
+                    odds_available = len(odds_lookup) > 0
+                else:
+                    odds_error = f"Odds API returned {odds_resp.status_code}"
+            except Exception as e:
+                odds_error = str(e)
+
+        # Live O/U odds
+        ou_lookup: dict = {}
+        ou_available = False
+        if ODDS_API_KEY:
+            try:
+                ou_resp = await client.get(
+                    f"{ODDS_BASE}/sports/icehockey_nhl/odds/",
+                    params={"apiKey": ODDS_API_KEY, "regions": "us", "markets": "totals", "oddsFormat": "american"},
+                )
+                if ou_resp.status_code == 200:
+                    for event in ou_resp.json():
+                        e_home = event.get("home_team", "")
+                        e_away = event.get("away_team", "")
+                        for book in event.get("bookmakers", [])[:1]:
+                            for market in book.get("markets", []):
+                                if market["key"] == "totals":
+                                    over  = next((o for o in market["outcomes"] if o["name"] == "Over"),  None)
+                                    under = next((o for o in market["outcomes"] if o["name"] == "Under"), None)
+                                    if over:
+                                        ou_lookup[f"{e_home}|{e_away}"] = {
+                                            "line":      over.get("point"),
+                                            "over_ml":   over.get("price"),
+                                            "under_ml":  under.get("price") if under else None,
+                                        }
+                    ou_available = len(ou_lookup) > 0
+            except Exception:
+                pass
+
+        # Build results
+        results = []
+        for g in games_raw:
+            h_abbrev = g.get("homeTeam", {}).get("abbrev", "")
+            a_abbrev = g.get("awayTeam", {}).get("abbrev", "")
+            h_place  = g.get("homeTeam", {}).get("placeName", {}).get("default", h_abbrev)
+            a_place  = g.get("awayTeam", {}).get("placeName", {}).get("default", a_abbrev)
+            h_common = g.get("homeTeam", {}).get("commonName", {}).get("default", "")
+            a_common = g.get("awayTeam", {}).get("commonName", {}).get("default", "")
+
+            h_stats = team_stats.get(h_abbrev, {})
+            a_stats = team_stats.get(a_abbrev, {})
+
+            series_state = get_playoff_series_state(g) if g.get("gameType") == 3 else None
+            model_h = model_home_prob(h_stats, a_stats, series_state)
+            model_a = round(1 - model_h, 4)
+
+            hgp = max(h_stats.get("gamesPlayed", 1), 1)
+            agp = max(a_stats.get("gamesPlayed", 1), 1)
+
+            # H2H odds match
+            home_ml = away_ml = implied_h = implied_a = None
+            for key, od in odds_lookup.items():
+                if h_place.lower() in od["home_team"].lower() and a_place.lower() in od["away_team"].lower():
+                    home_ml = od["home_ml"]
+                    away_ml = od["away_ml"]
+                    break
+            if home_ml is not None and away_ml is not None:
+                raw_h = moneyline_to_prob(int(home_ml))
+                raw_a = moneyline_to_prob(int(away_ml))
+                vig = raw_h + raw_a
+                if vig:
+                    implied_h = round(raw_h / vig, 4)
+                    implied_a = round(raw_a / vig, 4)
+
+            home_edge = round(model_h - implied_h, 4) if implied_h is not None else None
+            away_edge = round(model_a - implied_a, 4) if implied_a is not None else None
+            flagged   = home_edge is not None and abs(home_edge) >= EDGE_FLAG
+            strong    = home_edge is not None and abs(home_edge) >= EDGE_STRONG
+
+            # O/U odds match
+            ou_line = over_ml = under_ml = model_expected = model_over_p = implied_over_p = ou_edge = None
+            ou_flagged = ou_strong = False
+            for key, od in ou_lookup.items():
+                if h_place.lower() in key.lower() and a_place.lower() in key.lower():
+                    ou_line   = od["line"]
+                    over_ml   = od["over_ml"]
+                    under_ml  = od["under_ml"]
+                    break
+            if ou_line is not None:
+                h_gf = h_stats.get("goalFor", 0) / hgp
+                a_gf = a_stats.get("goalFor", 0) / agp
+                model_expected = round((h_gf + a_gf), 2)
+                model_over_p   = model_over_prob(model_expected, ou_line)
+                if over_ml is not None:
+                    raw_over  = moneyline_to_prob(int(over_ml))
+                    raw_under = moneyline_to_prob(int(under_ml)) if under_ml is not None else None
+                    vig_ou = (raw_over + raw_under) if raw_under is not None else raw_over * 2
+                    implied_over_p = round(raw_over / vig_ou, 4) if vig_ou else None
+                if implied_over_p is not None:
+                    ou_edge   = round(model_over_p - implied_over_p, 4)
+                    ou_flagged = abs(ou_edge) >= EDGE_FLAG
+                    ou_strong  = abs(ou_edge) >= EDGE_STRONG
+
+            results.append({
+                "game_id":           g.get("id"),
+                "start_utc":         g.get("startTimeUTC", ""),
+                "season_type":       "playoff" if g.get("gameType") == 3 else "regular",
+                "series_state":      series_state,
+                "home_abbrev":       h_abbrev,
+                "away_abbrev":       a_abbrev,
+                "home_name":         f"{h_place} {h_common}".strip(),
+                "away_name":         f"{a_place} {a_common}".strip(),
+                "home_record":       f"{h_stats.get('wins','?')}-{h_stats.get('losses','?')}-{h_stats.get('otLosses','?')}",
+                "away_record":       f"{a_stats.get('wins','?')}-{a_stats.get('losses','?')}-{a_stats.get('otLosses','?')}",
+                "home_l10":          h_stats.get("l10Wins"),
+                "away_l10":          a_stats.get("l10Wins"),
+                "home_gf_pg":        round(h_stats.get("goalFor", 0) / hgp, 2),
+                "away_gf_pg":        round(a_stats.get("goalFor", 0) / agp, 2),
+                "model_home_prob":   model_h,
+                "model_away_prob":   model_a,
+                "implied_home_prob": implied_h,
+                "implied_away_prob": implied_a,
+                "home_ml":           home_ml,
+                "away_ml":           away_ml,
+                "home_edge":         home_edge,
+                "away_edge":         away_edge,
+                "flagged":           flagged,
+                "strong_flag":       strong,
+                "ou_line":           ou_line,
+                "over_ml":           over_ml,
+                "under_ml":          under_ml,
+                "model_expected":    model_expected,
+                "model_over_prob":   model_over_p,
+                "implied_over_prob": implied_over_p,
+                "ou_edge":           ou_edge,
+                "ou_flagged":        ou_flagged,
+                "ou_strong":         ou_strong,
+            })
+
+        results.sort(key=lambda x: (
+            x["strong_flag"] or x["ou_strong"],
+            x["flagged"] or x["ou_flagged"],
+        ), reverse=True)
+
+        return {
+            "date":            today,
+            "season_type":     season_type,
+            "game_count":      len(results),
+            "games":           results,
+            "odds_available":  odds_available,
+            "ou_available":    ou_available,
+            "odds_error":      odds_error,
+        }
+
+
 @router.get("/backtest/games/{date}")
 async def get_backtest_games(date: str = Path(..., pattern=r"^\d{4}-\d{2}-\d{2}$")):
-    """Return model predictions for a past date — no actual scores included."""
+    """Return model predictions for a past date — both regular season and playoff games."""
     try:
         req_dt = date_type.fromisoformat(date)
     except ValueError:
@@ -238,7 +492,7 @@ async def get_backtest_games(date: str = Path(..., pattern=r"^\d{4}-\d{2}-\d{2}$
         raise HTTPException(status_code=400, detail="Date must be in the past")
 
     async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
-        # Historical standings for that date
+        # Standings
         try:
             resp = await client.get(f"{NHL_BASE}/standings/{date}")
             resp.raise_for_status()
@@ -254,7 +508,7 @@ async def get_backtest_games(date: str = Path(..., pattern=r"^\d{4}-\d{2}-\d{2}$
             if abbrev:
                 team_stats[abbrev] = t
 
-        # Schedule for that date
+        # Schedule
         try:
             resp = await client.get(f"{NHL_BASE}/schedule/{date}")
             resp.raise_for_status()
@@ -262,13 +516,20 @@ async def get_backtest_games(date: str = Path(..., pattern=r"^\d{4}-\d{2}-\d{2}$
         except Exception as e:
             return {"error": f"Schedule fetch failed: {e}", "games": []}
 
+        # Auto-detect season type (regular or playoff)
+        season_type = detect_season_type(schedule)
+        if not season_type:
+            return {"error": "Could not detect season type (no RS or playoff games found)", "games": []}
+
+        game_type_filter = 3 if season_type == "playoff" else 2
+
         games_raw = []
         for week in schedule.get("gameWeek", []):
             for g in week.get("games", []):
-                if g.get("gameType") == 2:
+                if g.get("gameType") == game_type_filter:
                     games_raw.append(g)
 
-        # Historical odds (optional — paid Odds API tier required)
+        # Historical odds (optional)
         hist_odds_lookup: dict = {}
         if ODDS_API_KEY:
             try:
@@ -302,7 +563,7 @@ async def get_backtest_games(date: str = Path(..., pattern=r"^\d{4}-\d{2}-\d{2}$
                             if matched:
                                 break
             except Exception:
-                pass  # odds unavailable — caller uses model prob fallback
+                pass
 
         results = []
         for g in games_raw:
@@ -316,11 +577,14 @@ async def get_backtest_games(date: str = Path(..., pattern=r"^\d{4}-\d{2}-\d{2}$
             h_stats = team_stats.get(h_abbrev, {})
             a_stats = team_stats.get(a_abbrev, {})
 
-            model_h    = model_home_prob(h_stats, a_stats)
+            # Get playoff series state if available
+            series_state = get_playoff_series_state(g)
+
+            model_h    = model_home_prob(h_stats, a_stats, series_state)
             model_a    = round(1 - model_h, 4)
             confidence = round(abs(model_h - 0.5), 4)
 
-            # Match odds by place name (same pattern as /predictions)
+            # Match odds
             bt_home_ml = bt_away_ml = None
             for key, od in hist_odds_lookup.items():
                 if h_place.lower() in od["home_team"].lower() and a_place.lower() in od["away_team"].lower():
@@ -342,22 +606,17 @@ async def get_backtest_games(date: str = Path(..., pattern=r"^\d{4}-\d{2}-\d{2}$
                 "confidence":      confidence,
                 "home_ml":         bt_home_ml,
                 "away_ml":         bt_away_ml,
+                "series_state":    series_state,
             })
 
-        # Sort strongest model lean first
         results.sort(key=lambda x: x["confidence"], reverse=True)
 
-        return {"date": date, "game_count": len(results), "games": results}
+        return {"date": date, "season_type": season_type, "game_count": len(results), "games": results}
 
 
 @router.post("/backtest/score")
 async def score_backtest(req: BacktestScoreRequest):
-    """
-    Score a backtest session.
-    Accept picks with model probs and optional ML odds.
-    Fetch actual game results from NHL API and compute unit P&L.
-    Store in backtest_picks table and return scored picks.
-    """
+    """Score a backtest session. Works for both regular season and playoff games."""
     try:
         req_dt = date_type.fromisoformat(req.date)
     except ValueError:
@@ -367,7 +626,6 @@ async def score_backtest(req: BacktestScoreRequest):
         raise HTTPException(status_code=400, detail="No picks to score")
 
     async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
-        # Fetch schedule for the date
         try:
             resp = await client.get(f"{NHL_BASE}/schedule/{req.date}")
             resp.raise_for_status()
@@ -375,17 +633,15 @@ async def score_backtest(req: BacktestScoreRequest):
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to fetch schedule: {e}")
 
-        # Build a lookup of game_id -> score
         games_by_id = {}
         for week in schedule.get("gameWeek", []):
             for g in week.get("games", []):
-                if g.get("gameType") == 2:
+                if g.get("gameType") in (2, 3):  # Regular season or playoff
                     games_by_id[g.get("id")] = {
                         "home_score": g.get("homeTeam", {}).get("score", 0),
                         "away_score": g.get("awayTeam", {}).get("score", 0),
                     }
 
-    # Score each pick
     scored = []
     with get_db() as conn:
         for pick in req.picks:
@@ -397,15 +653,13 @@ async def score_backtest(req: BacktestScoreRequest):
             home_score = game["home_score"]
             away_score = game["away_score"]
 
-            # Determine winner
             if home_score > away_score:
                 actual_winner = "home"
             elif away_score > home_score:
                 actual_winner = "away"
             else:
-                actual_winner = None  # Tie or no score
+                actual_winner = None
 
-            # Determine result
             if actual_winner is None:
                 result = "PENDING"
             elif actual_winner == pick.picked_team:
@@ -413,12 +667,10 @@ async def score_backtest(req: BacktestScoreRequest):
             else:
                 result = "LOSS"
 
-            # Compute unit result
             picked_ml = pick.home_ml if pick.picked_team == "home" else pick.away_ml
             model_prob = pick.model_home_prob if pick.picked_team == "home" else pick.model_away_prob
             unit_result = ml_to_units(picked_ml, result, model_prob=model_prob)
 
-            # Store in database
             conn.execute("""
                 INSERT OR REPLACE INTO backtest_picks
                     (session_date, game_id, home_name, away_name, home_abbrev, away_abbrev,
@@ -433,7 +685,6 @@ async def score_backtest(req: BacktestScoreRequest):
                 pick.home_ml, pick.away_ml, result,
             ))
 
-            # Add to response
             scored.append({
                 "game_id":       pick.game_id,
                 "home_name":     pick.home_name,
@@ -460,13 +711,10 @@ async def score_backtest(req: BacktestScoreRequest):
 
 @router.get("/edge-history")
 async def get_edge_history():
-    """
-    Return all saved edge picks grouped by date, with unit P&L annotations.
-    Resolves any PENDING picks from prior dates before responding.
-    """
+    """Return all saved edge picks (regular season and playoff) grouped by date, with unit P&L."""
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-    # ── Resolve pending picks from prior dates ──────────────────────────────
+    # Resolve pending picks from prior dates
     with get_db() as conn:
         pending_rows = conn.execute(
             "SELECT game_id, date, edge_team, home_name, away_name FROM edge_picks "
@@ -508,10 +756,10 @@ async def get_edge_history():
                             )
                     conn.commit()
 
-    # ── Reload all picks after resolution ───────────────────────────────────
+    # Reload all picks
     with get_db() as conn:
         rows = conn.execute(
-            "SELECT game_id, date, home_abbrev, away_abbrev, home_name, away_name, "
+            "SELECT game_id, date, season_type, home_abbrev, away_abbrev, home_name, away_name, "
             "edge_team, edge_value, strong_flag, model_prob, implied_prob, "
             "home_ml, away_ml, start_utc, actual_winner, result "
             "FROM edge_picks ORDER BY date DESC, start_utc ASC"
@@ -519,14 +767,14 @@ async def get_edge_history():
 
     picks = [dict(r) for r in rows]
 
-    # ── Compute summary totals ───────────────────────────────────────────────
+    # Summary totals
     total_wins    = sum(1 for p in picks if p["result"] == "WIN")
     total_losses  = sum(1 for p in picks if p["result"] == "LOSS")
     total_pending = sum(1 for p in picks if p["result"] == "PENDING")
     total         = len(picks)
     win_rate      = round(total_wins / (total_wins + total_losses), 4) if (total_wins + total_losses) > 0 else None
 
-    # ── Group by date ────────────────────────────────────────────────────────
+    # Group by date with season type
     by_date: dict = {}
     for p in picks:
         d = p["date"]
@@ -537,6 +785,7 @@ async def get_edge_history():
     picks_by_date = [
         {
             "date":    d,
+            "season_type": by_date[d][0].get("season_type", "regular") if by_date[d] else "regular",
             "picks":   by_date[d],
             "wins":    sum(1 for p in by_date[d] if p["result"] == "WIN"),
             "losses":  sum(1 for p in by_date[d] if p["result"] == "LOSS"),
@@ -545,7 +794,7 @@ async def get_edge_history():
         for d in sorted(by_date.keys(), reverse=True)
     ]
 
-    # ── Unit P&L per pick + cumulative series ────────────────────────────────
+    # Unit P&L
     all_unit_results = []
     for day in picks_by_date:
         day_units = 0.0
@@ -587,9 +836,7 @@ async def get_edge_history():
 
 @router.get("/backtest/history")
 async def get_backtest_history():
-    """
-    Return all saved backtest picks grouped by session date, with unit P&L annotations.
-    """
+    """Return all saved backtest picks grouped by session date."""
     with get_db() as conn:
         rows = conn.execute(
             "SELECT session_date, game_id, home_abbrev, away_abbrev, home_name, away_name, "
@@ -600,14 +847,12 @@ async def get_backtest_history():
 
     picks = [dict(r) for r in rows]
 
-    # ── Compute summary totals ───────────────────────────────────────────────
     total_wins    = sum(1 for p in picks if p["result"] == "WIN")
     total_losses  = sum(1 for p in picks if p["result"] == "LOSS")
     total_pending = sum(1 for p in picks if p["result"] == "PENDING")
     total         = len(picks)
     win_rate      = round(total_wins / (total_wins + total_losses), 4) if (total_wins + total_losses) > 0 else None
 
-    # ── Group by session date ────────────────────────────────────────────────
     by_date: dict = {}
     for p in picks:
         d = p["session_date"]
@@ -626,7 +871,6 @@ async def get_backtest_history():
         for d in sorted(by_date.keys(), reverse=True)
     ]
 
-    # ── Unit P&L per pick + cumulative series ────────────────────────────────
     all_unit_results = []
     for session in sessions:
         sess_units = 0.0
