@@ -978,8 +978,8 @@ function Portfolio({ portfolioList, screenResults, watchlist, onAdd, onRemove })
 
       {/* Column headers */}
       {portfolioList.length > 0 && (
-        <div style={{ display: "grid", gridTemplateColumns: "80px 70px 1fr 100px 20px", gap: 8, padding: "0 10px", color: "#334155", fontSize: 10, textTransform: "uppercase", fontFamily: "IBM Plex Mono, monospace" }}>
-          <span>Ticker</span><span>Price</span><span>Signals</span><span>Next Event</span><span />
+        <div style={{ display: "grid", gridTemplateColumns: "80px 70px 90px 1fr 100px 20px", gap: 8, padding: "0 10px", color: "#334155", fontSize: 10, textTransform: "uppercase", fontFamily: "IBM Plex Mono, monospace" }}>
+          <span>Ticker</span><span>Price</span><span>5D Chg</span><span>Signals</span><span>Next Event</span><span />
         </div>
       )}
 
@@ -998,15 +998,24 @@ function Portfolio({ portfolioList, screenResults, watchlist, onAdd, onRemove })
           const nextEvent = getNextEvent(data);
           const price = (!isLoading && !isError && data?.current_price) ? formatPrice(data.current_price) : "—";
 
+          const chg    = (!isLoading && !isError) ? data?.price_change_5d     : null;
+          const chgPct = (!isLoading && !isError) ? data?.price_change_5d_pct : null;
+          const chgColor = chg == null ? "#475569" : chg >= 0 ? "#00ff88" : "#ef4444";
+          const chgLabel = chg == null ? "—"
+            : `${chg >= 0 ? "+" : ""}${chg.toFixed(2)} (${chgPct >= 0 ? "+" : ""}${chgPct.toFixed(1)}%)`;
+
           return (
             <div key={ticker} style={{ background: "#0f172a", border: "1px solid #1e293b", borderRadius: 6 }}>
               {/* Collapsed row */}
               <div
-                style={{ display: "grid", gridTemplateColumns: "80px 70px 1fr 100px 20px", gap: 8, padding: "9px 10px", alignItems: "center", cursor: "pointer" }}
+                style={{ display: "grid", gridTemplateColumns: "80px 70px 90px 1fr 100px 20px", gap: 8, padding: "9px 10px", alignItems: "center", cursor: "pointer" }}
                 onClick={() => !isLoading && !isError && toggleExpand(ticker)}
               >
                 <span style={{ color: "#00ff88", fontWeight: "bold", fontSize: 12, fontFamily: "IBM Plex Mono, monospace" }}>{ticker}</span>
                 <span style={{ color: "#e2e8f0", fontSize: 12, fontFamily: "IBM Plex Mono, monospace" }}>{price}</span>
+                <span style={{ color: chgColor, fontSize: 11, fontFamily: "IBM Plex Mono, monospace" }}>
+                  {isLoading ? "" : chgLabel}
+                </span>
 
                 {/* Badges or loading shimmer */}
                 <div style={{ display: "flex", gap: 4, flexWrap: "wrap", alignItems: "center" }}>

@@ -4,7 +4,7 @@ import math
 import os
 import sqlite3
 from collections import defaultdict
-from datetime import datetime, date as date_type, timezone
+from datetime import datetime, date as date_type, timezone, timedelta
 from typing import List
 
 import httpx
@@ -304,7 +304,7 @@ async def get_todays_predictions():
         games_raw = []
         for week in schedule.get("gameWeek", []):
             for g in week.get("games", []):
-                if g.get("gameType") in (2, 3):
+                if g.get("gameType") in (2, 3) and g.get("startTimeUTC", "").startswith(today):
                     games_raw.append(g)
 
         # Live H2H odds
@@ -526,7 +526,7 @@ async def get_backtest_games(date: str = Path(..., pattern=r"^\d{4}-\d{2}-\d{2}$
         games_raw = []
         for week in schedule.get("gameWeek", []):
             for g in week.get("games", []):
-                if g.get("gameType") == game_type_filter:
+                if g.get("gameType") == game_type_filter and g.get("startTimeUTC", "").startswith(date):
                     games_raw.append(g)
 
         # Historical odds (optional)
@@ -911,3 +911,201 @@ async def get_backtest_history():
             "net_units":    total_units,
         },
     }
+
+
+@router.get("/backtest/date-range/{start_date}/{end_date}")
+async def backtest_date_range(
+    start_date: str = Path(..., pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    end_date: str = Path(..., pattern=r"^\d{4}-\d{2}-\d{2}$")
+):
+    """Backtest model predictions on all games in a date range."""
+    try:
+        start_dt = date_type.fromisoformat(start_date)
+        end_dt = date_type.fromisoformat(end_date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format (YYYY-MM-DD)")
+
+    today = datetime.now(timezone.utc).date()
+    if end_dt > today:
+        raise HTTPException(status_code=400, detail="End date cannot be in the future")
+    if start_dt > end_dt:
+        raise HTTPException(status_code=400, detail="Start date must be before end date")
+
+    date_range = (end_dt - start_dt).days
+    if date_range > 90:
+        raise HTTPException(status_code=400, detail="Date range too large (max 90 days)")
+
+    all_games = []
+    current_date = start_dt
+
+    async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+        while current_date <= end_dt:
+            date_str = current_date.isoformat()
+
+            try:
+                # Standings
+                standings_resp = await client.get(f"{NHL_BASE}/standings/{date_str}")
+                standings_resp.raise_for_status()
+                standings = standings_resp.json().get("standings", [])
+
+                # Schedule
+                schedule_resp = await client.get(f"{NHL_BASE}/schedule/{date_str}")
+                schedule_resp.raise_for_status()
+                schedule = schedule_resp.json()
+
+                # Score
+                score_resp = await client.get(f"{NHL_BASE}/score/{date_str}")
+                score_resp.raise_for_status()
+                scores = score_resp.json().get("games", [])
+
+                # Parse standings
+                team_stats = {}
+                for t in standings:
+                    abbrev = t.get("teamAbbrev", {}).get("default", "")
+                    if abbrev:
+                        team_stats[abbrev] = t
+
+                # Detect season type
+                season_type = detect_season_type(schedule)
+                if not season_type:
+                    current_date += timedelta(days=1)
+                    continue
+
+                game_type_filter = 3 if season_type == "playoff" else 2
+                scores_by_id = {g.get("id"): g for g in scores if g.get("gameType") == game_type_filter}
+
+                # Parse games with scores
+                for week in schedule.get("gameWeek", []):
+                    for g in week.get("games", []):
+                        if g.get("gameType") != game_type_filter:
+                            continue
+
+                        game_id = g.get("id")
+                        score_data = scores_by_id.get(game_id)
+                        if not score_data:
+                            continue
+
+                        h_abbrev = g.get("homeTeam", {}).get("abbrev", "")
+                        a_abbrev = g.get("awayTeam", {}).get("abbrev", "")
+                        h_place = g.get("homeTeam", {}).get("placeName", {}).get("default", "")
+                        a_place = g.get("awayTeam", {}).get("placeName", {}).get("default", "")
+                        h_common = g.get("homeTeam", {}).get("commonName", {}).get("default", "")
+                        a_common = g.get("awayTeam", {}).get("commonName", {}).get("default", "")
+
+                        h_stats = team_stats.get(h_abbrev, {})
+                        a_stats = team_stats.get(a_abbrev, {})
+
+                        series_state = get_playoff_series_state(g) if g.get("gameType") == 3 else None
+                        model_h = model_home_prob(h_stats, a_stats, series_state)
+                        model_a = round(1 - model_h, 4)
+
+                        h_score = score_data.get("homeTeam", {}).get("score", 0)
+                        a_score = score_data.get("awayTeam", {}).get("score", 0)
+
+                        if h_score == a_score:
+                            actual_winner = None
+                        else:
+                            actual_winner = "home" if h_score > a_score else "away"
+
+                        all_games.append({
+                            "date": date_str,
+                            "game_id": game_id,
+                            "home_abbrev": h_abbrev,
+                            "away_abbrev": a_abbrev,
+                            "home_name": f"{h_place} {h_common}".strip(),
+                            "away_name": f"{a_place} {a_common}".strip(),
+                            "model_home_prob": model_h,
+                            "model_away_prob": model_a,
+                            "home_score": h_score,
+                            "away_score": a_score,
+                            "actual_winner": actual_winner,
+                            "season_type": season_type,
+                        })
+
+            except Exception:
+                pass
+
+            current_date += timedelta(days=1)
+
+    # Score picks: model predicts the team with higher probability
+    picks = []
+    wins = 0
+    losses = 0
+    pending = 0
+    unit_results = []
+
+    for game in all_games:
+        if game["actual_winner"] is None:
+            result = "PENDING"
+            pending += 1
+        else:
+            if game["model_home_prob"] > game["model_away_prob"]:
+                picked_team = "home"
+                model_prob = game["model_home_prob"]
+            else:
+                picked_team = "away"
+                model_prob = game["model_away_prob"]
+
+            if picked_team == game["actual_winner"]:
+                result = "WIN"
+                wins += 1
+            else:
+                result = "LOSS"
+                losses += 1
+
+            if model_prob > 0 and model_prob < 1:
+                model_prob = max(0.20, min(0.80, model_prob))
+                unit_result = round((1 - model_prob) / model_prob, 4)
+            else:
+                unit_result = None
+
+            if unit_result is not None:
+                unit_results.append(unit_result)
+
+        picks.append({
+            "date": game["date"],
+            "game_id": game["game_id"],
+            "home_name": game["home_name"],
+            "away_name": game["away_name"],
+            "home_score": game["home_score"],
+            "away_score": game["away_score"],
+            "model_home_prob": game["model_home_prob"],
+            "model_away_prob": game["model_away_prob"],
+            "picked_team": "home" if game["model_home_prob"] > game["model_away_prob"] else "away",
+            "model_prob": max(game["model_home_prob"], game["model_away_prob"]),
+            "actual_winner": game["actual_winner"],
+            "result": result,
+            "unit_result": unit_results[-1] if unit_results and len(unit_results) > 0 and result != "PENDING" else None,
+            "season_type": game["season_type"],
+        })
+
+    total = wins + losses
+    win_rate = round(wins / total, 4) if total > 0 else None
+    total_units = round(sum(u for u in unit_results if u is not None), 4) if unit_results else 0.0
+
+    return {
+        "date_range": {
+            "start": start_date,
+            "end": end_date,
+            "days": date_range,
+        },
+        "picks": picks,
+        "totals": {
+            "total_games": total + pending,
+            "wins": wins,
+            "losses": losses,
+            "pending": pending,
+            "win_rate": win_rate,
+            "total_units": total_units,
+            "units_per_game": round(total_units / total, 4) if total > 0 else None,
+        },
+        "summary": f"Model: {wins}W-{losses}L ({win_rate*100 if win_rate else 0:.1f}%) | {total_units:+.2f} units over {total} resolved games"
+    }
+
+
+@router.get("/backtest/last-{days}-days")
+async def backtest_last_days(days: int = Path(..., ge=1, le=90)):
+    """Quick backtest of the last N days."""
+    end_date = datetime.now(timezone.utc).date()
+    start_date = end_date - timedelta(days=days)
+    return await backtest_date_range(start_date.isoformat(), end_date.isoformat())

@@ -471,7 +471,7 @@ def screen_ticker(ticker: str = Path(..., max_length=20)):
             result["insider_sells"] = None
             result["insider_net"] = None
 
-        # Golden cross: 50MA vs 200MA from 1y price history
+        # Golden cross: 50MA vs 200MA from 1y price history; also 5-day change
         try:
             hist = tk.history(period="1y")
             closes = hist["Close"].tolist() if not hist.empty else []
@@ -479,10 +479,20 @@ def screen_ticker(ticker: str = Path(..., max_length=20)):
             result["golden_cross"] = golden
             result["ma_50"] = ma50
             result["ma_200"] = ma200
+            if len(closes) >= 6:
+                price_5d_ago = closes[-6]
+                price_now    = closes[-1]
+                result["price_change_5d"]     = round(price_now - price_5d_ago, 4)
+                result["price_change_5d_pct"] = round((price_now - price_5d_ago) / price_5d_ago * 100, 2)
+            else:
+                result["price_change_5d"]     = None
+                result["price_change_5d_pct"] = None
         except Exception:
             result["golden_cross"] = None
             result["ma_50"] = None
             result["ma_200"] = None
+            result["price_change_5d"]     = None
+            result["price_change_5d_pct"] = None
 
         # Earnings date
         try:

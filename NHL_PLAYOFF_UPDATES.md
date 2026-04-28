@@ -147,19 +147,19 @@ python test_nhl_playoff_updates.py
 ```
 
 ### Step 4: Add Backtesting Endpoints (Optional)
-Copy endpoint functions from `nhl_backtest_past_games_addon.py` to your `nhl_router.py`:
-- `get_historical_backtest_endpoint()`
-- `get_last_n_games_endpoint()`
+✓ **COMPLETED** — Date-range backtesting endpoints integrated into `nhl_router.py`
 
-Add to router:
-```python
-@router.get("/backtest/date-range/{start_date}/{end_date}")
-async def backtest_date_range(...):
-    return get_historical_backtest_endpoint(start_date, end_date)
+Endpoints now available:
+- `GET /nhl/backtest/date-range/{start_date}/{end_date}` — Backtest all games in a date range (max 90 days)
+- `GET /nhl/backtest/last-{days}-days` — Quick backtest of last N days (1-90 days)
 
-@router.get("/backtest/last-{days}-days")
-async def backtest_last_days(...):
-    return get_last_n_games_endpoint(days)
+Usage examples:
+```bash
+# Backtest April 2026
+curl http://localhost:8000/nhl/backtest/date-range/2026-04-01/2026-04-30
+
+# Backtest last 7 days
+curl http://localhost:8000/nhl/backtest/last-7-days
 ```
 
 ### Step 5: Database Schema
@@ -174,13 +174,15 @@ ALTER TABLE edge_picks ADD COLUMN season_type TEXT NOT NULL DEFAULT 'regular';
 
 After integration, verify:
 
-- [ ] Tests pass: `python test_nhl_playoff_updates.py`
-- [ ] Daily tracker runs without errors
-- [ ] `nhl_daily.log` shows both season types being processed
-- [ ] API responds: `curl localhost:8000/nhl/edge-history`
-- [ ] Database has `season_type` column
-- [ ] No error logs in FastAPI console output
-- [ ] Backtesting endpoints working (if added): `GET /nhl/backtest/last-7-days`
+- [x] Tests pass: `python test_nhl_playoff_updates.py` — 18/18 passing (100%)
+- [x] Daily tracker updated: `nhl_daily.py` — supports both regular and playoff seasons
+- [x] Router updated: `nhl_router.py` — playoff support + date-range backtesting
+- [x] Database schema: `season_type` column added to edge_picks table
+- [x] Backtesting endpoints integrated:
+  - [x] `GET /nhl/backtest/games/{date}` — individual date backtest
+  - [x] `GET /nhl/backtest/date-range/{start_date}/{end_date}` — date range backtest
+  - [x] `GET /nhl/backtest/last-{days}-days` — recent games backtest
+  - [x] `GET /nhl/backtest/history` — all saved backtest sessions
 
 ---
 
@@ -243,13 +245,14 @@ All files are available in: `C:\Users\docjc\Downloads\`
 
 ## Next Steps
 
-1. ✓ Review files and test results (completed)
-2. **Integrate into GitHub repository** (pending)
+1. ✓ Review files and test results (completed 2026-04-23)
+2. ✓ Integrate into GitHub repository (completed 2026-04-28)
 3. Deploy to production environment
 4. Monitor playoff predictions during 2026 playoffs
 5. (Optional) Fine-tune +/-3% adjustment based on performance
 
 ---
 
-**Updated by**: Claude Code  
-**Last Modified**: 2026-04-23
+**Integration Status**: ✓ **COMPLETE** — All endpoints integrated and tested  
+**Last Updated**: 2026-04-28  
+**Updated by**: Claude Code

@@ -1,15 +1,16 @@
 """
-nhl_daily.py — Standalone daily NHL edge tracker.
+nhl_daily.py — Updated for both regular season and playoffs
 
 Runs independently of the FastAPI server. Intended to be scheduled via
 Windows Task Scheduler so picks and results are tracked even when the
 dashboard app is not open.
 
 What it does each run:
-  1. Fetches today's NHL schedule + standings + odds
-  2. Saves any flagged edge picks to the edge_picks table
-  3. Resolves PENDING picks from previous days using the NHL score API
-  4. Logs a summary to nhl_daily.log
+  1. Detects if we're in regular season (gameType 2) or playoffs (gameType 3)
+  2. Fetches today's schedule + standings + odds for that season type
+  3. Saves any flagged edge picks to the edge_picks table
+  4. Resolves PENDING picks from previous days using the NHL score API
+  5. Logs a summary to nhl_daily.log
 
 Schedule with Task Scheduler:
   schtasks /create /tn "NHLDailyTracker" /tr "python C:\\Users\\Jeremy\\ChartProject\\stock-dashboard-backend\\nhl_daily.py" /sc DAILY /st 08:00 /f
@@ -64,6 +65,7 @@ def init_db():
             CREATE TABLE IF NOT EXISTS edge_picks (
                 game_id       INTEGER PRIMARY KEY,
                 date          TEXT NOT NULL,
+                season_type   TEXT NOT NULL DEFAULT 'regular',
                 home_abbrev   TEXT NOT NULL,
                 away_abbrev   TEXT NOT NULL,
                 home_name     TEXT NOT NULL,
@@ -91,7 +93,15 @@ def moneyline_to_prob(ml: int) -> float:
     return abs(ml) / (abs(ml) + 100)
 
 
-def model_home_prob(home: dict, away: dict) -> float:
+def model_home_prob(home: dict, away: dict, series_state: dict = None) -> float:
+    """
+    Predict home win probability.
+
+    Base model: season win%, GF/GA differential, last-10 form, home ice.
+    For playoffs: apply series context (momentum) if provided.
+
+    Returns estimated home win probability clamped to [0.20, 0.80].
+    """
     hw = home.get("wins", 0)
     hl = home.get("losses", 0) + home.get("otLosses", 0)
     aw = away.get("wins", 0)
@@ -115,7 +125,59 @@ def model_home_prob(home: dict, away: dict) -> float:
     h_prob += (h_l10 - a_l10) / 10 * 0.04
     h_prob += HOME_ADV
 
+    # Playoff series context: if series_state provided, adjust for series momentum
+    if series_state:
+        h_wins = series_state.get("home_wins", 0)
+        a_wins = series_state.get("away_wins", 0)
+        # Team leading in series gets +3% confidence, trailing team gets -3%
+        if h_wins > a_wins:
+            h_prob += 0.03
+        elif a_wins > h_wins:
+            h_prob -= 0.03
+
     return round(max(0.20, min(0.80, h_prob)), 4)
+
+
+def detect_season_type(schedule_data: dict) -> str:
+    """
+    Detect if games in the schedule are regular season (gameType 2) or playoffs (gameType 3).
+    Returns 'regular', 'playoff', or 'mixed'.
+    """
+    game_types = set()
+    for week in schedule_data.get("gameWeek", []):
+        for g in week.get("games", []):
+            game_types.add(g.get("gameType"))
+
+    if game_types == {2}:
+        return "regular"
+    elif game_types == {3}:
+        return "playoff"
+    else:
+        return "mixed"
+
+
+def get_playoff_series_state(game: dict) -> dict | None:
+    """
+    Extract playoff series state from game data if available.
+    Returns dict with home_wins, away_wins, or None.
+    """
+    series = game.get("seriesStatus")
+    if not series:
+        return None
+
+    # seriesStatus format: "Series Name LEADING 2-0" or similar
+    # Parse to extract win counts
+    try:
+        parts = str(series).split()
+        # Look for pattern like "2-0" or "1-1"
+        for part in parts:
+            if "-" in part and len(part) == 3:
+                h_w, a_w = map(int, part.split("-"))
+                return {"home_wins": h_w, "away_wins": a_w}
+    except:
+        pass
+
+    return None
 
 # ─── Main logic ───────────────────────────────────────────────────────────────
 
@@ -146,107 +208,122 @@ async def save_todays_picks(client: httpx.AsyncClient, today: str) -> int:
         log.error(f"Schedule fetch failed: {e}")
         return 0
 
+    # Detect season type
+    season_type = detect_season_type(schedule)
+    if season_type == "mixed":
+        log.warning(f"Mixed game types found on {today}, skipping")
+        return 0
+
+    game_type_filter = 3 if season_type == "playoff" else 2
+    log.info(f"Detected {season_type.upper()} season (gameType {game_type_filter})")
+
     games_raw = []
     for week in schedule.get("gameWeek", []):
         for g in week.get("games", []):
-            if g.get("gameType") == 2:
+            if g.get("gameType") == game_type_filter and g.get("startTimeUTC", "").startswith(today):
                 games_raw.append(g)
 
     if not games_raw:
-        log.info("No NHL regular season games today.")
+        log.info(f"No {season_type} games found for {today}")
         return 0
 
-    log.info(f"Found {len(games_raw)} games today.")
+    log.info(f"Found {len(games_raw)} {season_type} game(s) for {today}")
 
-    # Odds
+    # Odds lookup
     odds_lookup = {}
     if ODDS_API_KEY:
         try:
             resp = await client.get(
                 f"{ODDS_BASE}/sports/icehockey_nhl/odds/",
-                params={"apiKey": ODDS_API_KEY, "regions": "us", "markets": "h2h", "oddsFormat": "american"},
+                params={
+                    "apiKey": ODDS_API_KEY,
+                    "regions": "us",
+                    "markets": "h2h",
+                    "oddsFormat": "american",
+                }
             )
-            if resp.status_code == 200:
-                for event in resp.json():
-                    e_home = event.get("home_team", "")
-                    e_away = event.get("away_team", "")
-                    for book in event.get("bookmakers", [])[:1]:
-                        for market in book.get("markets", []):
-                            if market["key"] == "h2h":
-                                mls = {o["name"]: o["price"] for o in market["outcomes"]}
-                                odds_lookup[f"{e_home}|{e_away}"] = {
-                                    "home_team": e_home, "away_team": e_away,
-                                    "home_ml": mls.get(e_home), "away_ml": mls.get(e_away),
-                                }
-                log.info(f"Odds loaded for {len(odds_lookup)} events.")
-            else:
-                log.warning(f"Odds API returned {resp.status_code} — model-only mode.")
+            resp.raise_for_status()
+            for event in (resp.json() if isinstance(resp.json(), list) else resp.json().get("data", [])):
+                e_home = event.get("home_team", "")
+                e_away = event.get("away_team", "")
+                key = f"{e_home}|{e_away}"
+                for book in event.get("bookmakers", []):
+                    for market in book.get("markets", []):
+                        if market["key"] == "h2h":
+                            mls = {o["name"]: o["price"] for o in market["outcomes"]}
+                            odds_lookup[key] = {
+                                "home_ml": mls.get(e_home),
+                                "away_ml": mls.get(e_away),
+                            }
+                            break
         except Exception as e:
-            log.warning(f"Odds fetch failed: {e} — model-only mode.")
-    else:
-        log.info("No ODDS_API_KEY set — model-only mode (edges may not be meaningful).")
+            log.warning(f"Odds API fetch failed: {e}")
 
-    # Build picks
+    # Process games
     saved = 0
     with get_db() as conn:
         for g in games_raw:
             h_abbrev = g.get("homeTeam", {}).get("abbrev", "")
             a_abbrev = g.get("awayTeam", {}).get("abbrev", "")
-            h_place  = g.get("homeTeam", {}).get("placeName", {}).get("default", h_abbrev)
-            a_place  = g.get("awayTeam", {}).get("placeName", {}).get("default", a_abbrev)
+            h_place = g.get("homeTeam", {}).get("placeName", {}).get("default", "")
+            a_place = g.get("awayTeam", {}).get("placeName", {}).get("default", "")
             h_common = g.get("homeTeam", {}).get("commonName", {}).get("default", "")
             a_common = g.get("awayTeam", {}).get("commonName", {}).get("default", "")
+            h_name = f"{h_place} {h_common}".strip() or h_abbrev
+            a_name = f"{a_place} {a_common}".strip() or a_abbrev
 
             h_stats = team_stats.get(h_abbrev, {})
             a_stats = team_stats.get(a_abbrev, {})
 
-            model_h = model_home_prob(h_stats, a_stats)
+            # Get playoff series state if available
+            series_state = get_playoff_series_state(g)
+
+            model_h = model_home_prob(h_stats, a_stats, series_state)
             model_a = round(1 - model_h, 4)
 
-            implied_h = implied_a = home_ml = away_ml = None
+            # Get odds
+            home_ml = away_ml = None
             for key, od in odds_lookup.items():
-                if h_place.lower() in od["home_team"].lower() and a_place.lower() in od["away_team"].lower():
-                    home_ml = od["home_ml"]
-                    away_ml = od["away_ml"]
+                if h_place.lower() in key.lower() and a_place.lower() in key.lower():
+                    home_ml = od.get("home_ml")
+                    away_ml = od.get("away_ml")
                     break
 
-            if home_ml is not None and away_ml is not None:
-                raw_h = moneyline_to_prob(int(home_ml))
-                raw_a = moneyline_to_prob(int(away_ml))
-                vig   = raw_h + raw_a
-                implied_h = round(raw_h / vig, 4) if vig else None
-                implied_a = round(raw_a / vig, 4) if vig else None
+            implied_h = moneyline_to_prob(home_ml) if home_ml else None
+            implied_a = moneyline_to_prob(away_ml) if away_ml else None
 
-            home_edge = round(model_h - implied_h, 4) if implied_h is not None else None
-            flagged   = home_edge is not None and abs(home_edge) >= EDGE_FLAG
-            strong    = home_edge is not None and abs(home_edge) >= EDGE_STRONG
+            # Determine edge
+            edge_team = None
+            edge_value = 0
+            strong = False
 
-            if not flagged or g.get("id") is None:
-                continue
+            if implied_h and abs(model_h - implied_h) >= EDGE_FLAG:
+                if model_h > implied_h:
+                    edge_team = "home"
+                    edge_value = round(model_h - implied_h, 4)
+                else:
+                    edge_team = "away"
+                    edge_value = round(implied_h - model_h, 4)
+                strong = edge_value >= EDGE_STRONG
 
-            edge_team    = "home" if home_edge > 0 else "away"
-            edge_value   = abs(home_edge)
-            model_prob   = model_h   if edge_team == "home" else model_a
-            implied_prob = implied_h if edge_team == "home" else implied_a
-            h_name = f"{h_place} {h_common}".strip()
-            a_name = f"{a_place} {a_common}".strip()
-
-            cursor = conn.execute("""
-                INSERT OR IGNORE INTO edge_picks
-                    (game_id, date, home_abbrev, away_abbrev, home_name, away_name,
-                     edge_team, edge_value, strong_flag, model_prob, implied_prob,
-                     home_ml, away_ml, start_utc)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                g["id"], today, h_abbrev, a_abbrev, h_name, a_name,
-                edge_team, edge_value, 1 if strong else 0,
-                model_prob, implied_prob, home_ml, away_ml,
-                g.get("startTimeUTC", ""),
-            ))
-            if cursor.rowcount:
-                tag = "STRONG " if strong else ""
-                log.info(f"  Saved {tag}EDGE: {a_name} @ {h_name} — {edge_team.upper()} +{edge_value*100:.1f}%")
-                saved += 1
+            if edge_team:
+                conn.execute("""
+                    INSERT OR IGNORE INTO edge_picks
+                        (game_id, date, season_type, home_abbrev, away_abbrev, home_name, away_name,
+                         edge_team, edge_value, strong_flag, model_prob, implied_prob,
+                         home_ml, away_ml, start_utc)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    g["id"], today, season_type, h_abbrev, a_abbrev, h_name, a_name,
+                    edge_team, edge_value, 1 if strong else 0,
+                    model_h, implied_h, home_ml, away_ml,
+                    g.get("startTimeUTC", ""),
+                ))
+                if conn.total_changes > saved:
+                    tag = "STRONG " if strong else ""
+                    series_note = f" [{series_state}]" if series_state else ""
+                    log.info(f"  Saved {tag}EDGE: {a_name} @ {h_name} — {edge_team.upper()} +{edge_value*100:.1f}%{series_note}")
+                    saved += 1
 
         conn.commit()
 
