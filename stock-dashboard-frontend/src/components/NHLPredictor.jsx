@@ -79,10 +79,11 @@ function GameCard({ game }) {
     ? "rgba(245,158,11,0.4)"
     : "rgba(255,255,255,0.07)";
 
+  const edgeTeamAbbrev = game.home_edge > 0 ? game.home_abbrev : game.away_abbrev;
   const mlBadge = strong_flag
-    ? { label: "STRONG EDGE",  bg: "rgba(239,68,68,0.15)",  color: "#ef4444", border: "rgba(239,68,68,0.3)" }
+    ? { label: `STRONG ${edgeTeamAbbrev} EDGE`, bg: "rgba(239,68,68,0.15)",  color: "#ef4444", border: "rgba(239,68,68,0.3)" }
     : flagged
-    ? { label: "EDGE",         bg: "rgba(245,158,11,0.12)", color: "#f59e0b", border: "rgba(245,158,11,0.3)" }
+    ? { label: `${edgeTeamAbbrev} EDGE`,         bg: "rgba(245,158,11,0.12)", color: "#f59e0b", border: "rgba(245,158,11,0.3)" }
     : null;
 
   const ouDir   = ou_edge != null ? (ou_edge > 0 ? "OVER" : "UNDER") : null;
@@ -267,8 +268,11 @@ function HistoryPickRow({ pick }) {
     ? { label: "LOSS",    bg: "rgba(239,68,68,0.10)", color: "#ef4444", border: "rgba(239,68,68,0.25)" }
     : { label: "PENDING", bg: "rgba(71,85,105,0.20)", color: "#475569", border: "rgba(71,85,105,0.3)"  };
 
-  const edgeTeamName = pick.edge_team === "home" ? pick.home_name : pick.away_name;
-  const edgePct      = `+${(pick.edge_value * 100).toFixed(1)}%`;
+  const isOU = pick.edge_team === "over" || pick.edge_team === "under";
+  const edgeTeamName = isOU
+    ? `${pick.edge_team.toUpperCase()} ${pick.ou_line ?? ""}`
+    : pick.edge_team === "home" ? pick.home_name : pick.away_name;
+  const edgePct = `+${(pick.edge_value * 100).toFixed(1)}%`;
 
   return (
     <div style={{
@@ -723,7 +727,7 @@ function BacktestHistorySession({ session }) {
       }}>
         <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 10, color: "#475569", letterSpacing: 1.5 }}>{open ? "▾" : "▸"}</span>
         <span style={{ fontFamily: "'Syne', sans-serif", fontWeight: 700, fontSize: 13, color: "#e2e8f0", flex: 1, textAlign: "left" }}>
-          {fmtShortDate(session.date)}
+          {fmtShortDate(session.session_date)}
         </span>
         <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 10, color: "#475569", display: "flex", gap: 14 }}>
           <span>{session.picks.length} pick{session.picks.length !== 1 ? "s" : ""}</span>
@@ -799,7 +803,7 @@ function BacktestHistoryPanel({ data, loading, error }) {
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {sessions.map(s => <BacktestHistorySession key={s.date} session={s} />)}
+          {sessions.map(s => <BacktestHistorySession key={s.session_date} session={s} />)}
         </div>
       )}
     </div>

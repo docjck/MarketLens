@@ -191,7 +191,7 @@ def model_home_prob(home: dict, away: dict, series_state: dict = None) -> float:
 def detect_season_type(schedule_data: dict) -> str:
     """
     Detect if games are regular season (gameType 2) or playoffs (gameType 3).
-    Returns 'regular', 'playoff', or None.
+    Returns 'regular', 'playoff', or 'mixed'.
     """
     game_types = set()
     for week in schedule_data.get("gameWeek", []):
@@ -202,6 +202,8 @@ def detect_season_type(schedule_data: dict) -> str:
         return "regular"
     elif game_types == {3}:
         return "playoff"
+    elif game_types == {2, 3}:
+        return "mixed"
     return None
 
 
@@ -301,10 +303,12 @@ async def get_todays_predictions():
                     "odds_available": False, "ou_available": False}
 
         season_type = detect_season_type(schedule)
+        tomorrow = (datetime.now(timezone.utc) + timedelta(days=1)).strftime("%Y-%m-%d")
         games_raw = []
         for week in schedule.get("gameWeek", []):
             for g in week.get("games", []):
-                if g.get("gameType") in (2, 3) and g.get("startTimeUTC", "").startswith(today):
+                start = g.get("startTimeUTC", "")
+                if g.get("gameType") in (2, 3) and (start.startswith(today) or start.startswith(tomorrow)):
                     games_raw.append(g)
 
         # Live H2H odds
@@ -521,12 +525,13 @@ async def get_backtest_games(date: str = Path(..., pattern=r"^\d{4}-\d{2}-\d{2}$
         if not season_type:
             return {"error": "Could not detect season type (no RS or playoff games found)", "games": []}
 
-        game_type_filter = 3 if season_type == "playoff" else 2
+        # Allow both regular (2) and playoff (3) games
+        game_type_filter = (2, 3)
 
         games_raw = []
         for week in schedule.get("gameWeek", []):
             for g in week.get("games", []):
-                if g.get("gameType") == game_type_filter and g.get("startTimeUTC", "").startswith(date):
+                if g.get("gameType") in game_type_filter and g.get("startTimeUTC", "").startswith(date):
                     games_raw.append(g)
 
         # Historical odds (optional)
@@ -627,20 +632,19 @@ async def score_backtest(req: BacktestScoreRequest):
 
     async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
         try:
-            resp = await client.get(f"{NHL_BASE}/schedule/{req.date}")
+            resp = await client.get(f"{NHL_BASE}/score/{req.date}")
             resp.raise_for_status()
-            schedule = resp.json()
+            score_data = resp.json()
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to fetch schedule: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to fetch scores: {e}")
 
         games_by_id = {}
-        for week in schedule.get("gameWeek", []):
-            for g in week.get("games", []):
-                if g.get("gameType") in (2, 3):  # Regular season or playoff
-                    games_by_id[g.get("id")] = {
-                        "home_score": g.get("homeTeam", {}).get("score", 0),
-                        "away_score": g.get("awayTeam", {}).get("score", 0),
-                    }
+        for g in score_data.get("games", []):
+            if g.get("gameType") in (2, 3):
+                games_by_id[g.get("id")] = {
+                    "home_score": g.get("homeTeam", {}).get("score", 0),
+                    "away_score": g.get("awayTeam", {}).get("score", 0),
+                }
 
     scored = []
     with get_db() as conn:
@@ -702,10 +706,18 @@ async def score_backtest(req: BacktestScoreRequest):
 
         conn.commit()
 
+    s_wins = sum(1 for s in scored if s["result"] == "WIN")
+    s_losses = sum(1 for s in scored if s["result"] == "LOSS")
     return {
         "date": req.date,
         "picks_scored": len(scored),
         "scored": scored,
+        "summary": {
+            "total": len(scored),
+            "wins": s_wins,
+            "losses": s_losses,
+            "pending": sum(1 for s in scored if s["result"] == "PENDING"),
+        },
     }
 
 
@@ -738,21 +750,36 @@ async def get_edge_history():
                     for sg in score_games:
                         if sg.get("gameState") not in ("OFF", "FINAL"):
                             continue
-                        gid = sg.get("id")
+                        gid     = sg.get("id")
                         h_score = sg.get("homeTeam", {}).get("score") or 0
                         a_score = sg.get("awayTeam", {}).get("score") or 0
-                        if h_score == a_score:
-                            continue
-                        actual_winner = "home" if h_score > a_score else "away"
-                        existing = conn.execute(
-                            "SELECT game_id, edge_team FROM edge_picks "
-                            "WHERE game_id = ? AND result = 'PENDING'", (gid,)
+                        total   = h_score + a_score
+
+                        # Resolve H2H pick (positive game_id)
+                        if h_score != a_score:
+                            actual_winner = "home" if h_score > a_score else "away"
+                            existing = conn.execute(
+                                "SELECT game_id, edge_team FROM edge_picks "
+                                "WHERE game_id = ? AND result = 'PENDING'", (gid,)
+                            ).fetchone()
+                            if existing:
+                                result = "WIN" if existing["edge_team"] == actual_winner else "LOSS"
+                                conn.execute(
+                                    "UPDATE edge_picks SET actual_winner = ?, result = ? WHERE game_id = ?",
+                                    (actual_winner, result, gid)
+                                )
+
+                        # Resolve O/U pick (negative game_id)
+                        ou_pick = conn.execute(
+                            "SELECT game_id, edge_team, ou_line FROM edge_picks "
+                            "WHERE game_id = ? AND result = 'PENDING'", (-gid,)
                         ).fetchone()
-                        if existing:
-                            result = "WIN" if existing["edge_team"] == actual_winner else "LOSS"
+                        if ou_pick and ou_pick["ou_line"] is not None:
+                            actual_ou = "over" if total > ou_pick["ou_line"] else "under"
+                            result = "WIN" if ou_pick["edge_team"] == actual_ou else "LOSS"
                             conn.execute(
                                 "UPDATE edge_picks SET actual_winner = ?, result = ? WHERE game_id = ?",
-                                (actual_winner, result, gid)
+                                (actual_ou, result, -gid)
                             )
                     conn.commit()
 
@@ -761,7 +788,7 @@ async def get_edge_history():
         rows = conn.execute(
             "SELECT game_id, date, season_type, home_abbrev, away_abbrev, home_name, away_name, "
             "edge_team, edge_value, strong_flag, model_prob, implied_prob, "
-            "home_ml, away_ml, start_utc, actual_winner, result "
+            "home_ml, away_ml, ou_line, start_utc, actual_winner, result "
             "FROM edge_picks ORDER BY date DESC, start_utc ASC"
         ).fetchall()
 
@@ -799,7 +826,11 @@ async def get_edge_history():
     for day in picks_by_date:
         day_units = 0.0
         for p in day["picks"]:
-            edge_ml = p["home_ml"] if p["edge_team"] == "home" else p["away_ml"]
+            # For O/U picks: home_ml holds over_ml, away_ml holds under_ml
+            if p["edge_team"] in ("home", "over"):
+                edge_ml = p["home_ml"]
+            else:
+                edge_ml = p["away_ml"]
             ur = ml_to_units(edge_ml, p["result"], model_prob=p.get("model_prob"))
             p["unit_result"] = ur
             if ur is not None:
@@ -1037,7 +1068,7 @@ async def backtest_date_range(
     for game in all_games:
         if game["actual_winner"] is None:
             result = "PENDING"
-            pending += 1
+            current_unit = None
         else:
             if game["model_home_prob"] > game["model_away_prob"]:
                 picked_team = "home"
@@ -1053,14 +1084,9 @@ async def backtest_date_range(
                 result = "LOSS"
                 losses += 1
 
-            if model_prob > 0 and model_prob < 1:
-                model_prob = max(0.20, min(0.80, model_prob))
-                unit_result = round((1 - model_prob) / model_prob, 4)
-            else:
-                unit_result = None
-
-            if unit_result is not None:
-                unit_results.append(unit_result)
+            current_unit = ml_to_units(None, result, model_prob=model_prob)
+            if current_unit is not None:
+                unit_results.append(current_unit)
 
         picks.append({
             "date": game["date"],
@@ -1075,7 +1101,7 @@ async def backtest_date_range(
             "model_prob": max(game["model_home_prob"], game["model_away_prob"]),
             "actual_winner": game["actual_winner"],
             "result": result,
-            "unit_result": unit_results[-1] if unit_results and len(unit_results) > 0 and result != "PENDING" else None,
+            "unit_result": current_unit,
             "season_type": game["season_type"],
         })
 

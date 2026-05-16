@@ -19,9 +19,10 @@ Schedule with Task Scheduler:
 
 import asyncio
 import logging
+import math
 import os
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import httpx
 from dotenv import load_dotenv
@@ -83,6 +84,13 @@ def init_db():
                 saved_at      TEXT DEFAULT (datetime('now'))
             )
         """)
+        # Add ou_line column for O/U picks (edge_team = 'over' or 'under').
+        # O/U picks are stored with game_id = -(real_game_id) so H2H and O/U
+        # picks for the same game can coexist without PRIMARY KEY conflicts.
+        try:
+            conn.execute("ALTER TABLE edge_picks ADD COLUMN ou_line REAL")
+        except sqlite3.OperationalError:
+            pass  # column already exists
         conn.commit()
 
 # ─── Model helpers ────────────────────────────────────────────────────────────
@@ -91,6 +99,19 @@ def moneyline_to_prob(ml: int) -> float:
     if ml > 0:
         return 100 / (ml + 100)
     return abs(ml) / (abs(ml) + 100)
+
+
+def poisson_pmf(k: int, lam: float) -> float:
+    if k < 0 or lam <= 0:
+        return 0.0
+    return (lam ** k) * math.exp(-lam) / math.factorial(k)
+
+
+def model_over_prob(expected_total: float, line: float) -> float:
+    """P(total goals > line) using Poisson. Line is typically X.5."""
+    threshold = int(line) + 1
+    p_under = sum(poisson_pmf(k, expected_total) for k in range(threshold))
+    return round(max(0.01, min(0.99, 1 - p_under)), 4)
 
 
 def model_home_prob(home: dict, away: dict, series_state: dict = None) -> float:
@@ -182,7 +203,12 @@ def get_playoff_series_state(game: dict) -> dict | None:
 # ─── Main logic ───────────────────────────────────────────────────────────────
 
 async def save_todays_picks(client: httpx.AsyncClient, today: str) -> int:
-    """Fetch today's games, compute edges, save flagged picks. Returns count saved."""
+    """Fetch today's games, compute edges, save flagged picks. Returns count saved.
+
+    Checks both today's AND tomorrow's UTC schedule so that late Western Conference
+    games (e.g. 10 pm PT = 5 am UTC next day) are captured while pre-game odds
+    are still available.
+    """
 
     # Standings
     try:
@@ -199,38 +225,66 @@ async def save_todays_picks(client: httpx.AsyncClient, today: str) -> int:
         if abbrev:
             team_stats[abbrev] = t
 
-    # Schedule
-    try:
-        resp = await client.get(f"{NHL_BASE}/schedule/{today}")
-        resp.raise_for_status()
-        schedule = resp.json()
-    except Exception as e:
-        log.error(f"Schedule fetch failed: {e}")
+    # Schedule — fetch today AND tomorrow UTC to catch late Western games whose
+    # startTimeUTC rolls into the next calendar day.
+    # Also accept tomorrow-UTC games found in today's response: the NHL API
+    # groups midnight-UTC games (e.g. 8 PM EDT) under today's schedule but
+    # stamps them with tomorrow's UTC date, so they'd otherwise be missed.
+    tomorrow = (datetime.strptime(today, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+    games_raw = []
+    seen_ids: set = set()
+    season_type = None
+
+    for fetch_date in (today, tomorrow):
+        try:
+            resp = await client.get(f"{NHL_BASE}/schedule/{fetch_date}")
+            resp.raise_for_status()
+            schedule = resp.json()
+        except Exception as e:
+            log.warning(f"Schedule fetch failed for {fetch_date}: {e}")
+            continue
+
+        detected = detect_season_type(schedule)
+        if detected and detected != "mixed":
+            season_type = detected  # last non-mixed wins (today takes priority)
+
+        # Accept games starting on today or tomorrow regardless of which
+        # schedule endpoint returned them — avoids midnight-UTC games falling
+        # through when the NHL API stamps them with the next UTC date but only
+        # surfaces them in the current day's schedule response.
+        for week in schedule.get("gameWeek", []):
+            for g in week.get("games", []):
+                gid = g.get("id")
+                start = g.get("startTimeUTC", "")
+                if (
+                    g.get("gameType") in (2, 3)
+                    and (start.startswith(today) or start.startswith(tomorrow))
+                    and gid not in seen_ids
+                ):
+                    games_raw.append(g)
+                    seen_ids.add(gid)
+
+    if not season_type:
+        log.info(f"No NHL games found for {today}")
         return 0
 
-    # Detect season type
-    season_type = detect_season_type(schedule)
     if season_type == "mixed":
-        log.warning(f"Mixed game types found on {today}, skipping")
+        log.warning(f"Mixed game types found around {today}, skipping")
         return 0
 
     game_type_filter = 3 if season_type == "playoff" else 2
+    games_raw = [g for g in games_raw if g.get("gameType") == game_type_filter]
     log.info(f"Detected {season_type.upper()} season (gameType {game_type_filter})")
-
-    games_raw = []
-    for week in schedule.get("gameWeek", []):
-        for g in week.get("games", []):
-            if g.get("gameType") == game_type_filter and g.get("startTimeUTC", "").startswith(today):
-                games_raw.append(g)
 
     if not games_raw:
         log.info(f"No {season_type} games found for {today}")
         return 0
 
-    log.info(f"Found {len(games_raw)} {season_type} game(s) for {today}")
+    log.info(f"Found {len(games_raw)} {season_type} game(s) for {today} (incl. late Western games)")
 
-    # Odds lookup
-    odds_lookup = {}
+    # H2H odds lookup
+    odds_lookup: dict = {}
+    ou_lookup: dict = {}
     if ODDS_API_KEY:
         try:
             resp = await client.get(
@@ -238,16 +292,17 @@ async def save_todays_picks(client: httpx.AsyncClient, today: str) -> int:
                 params={
                     "apiKey": ODDS_API_KEY,
                     "regions": "us",
-                    "markets": "h2h",
+                    "markets": "h2h,totals",
                     "oddsFormat": "american",
                 }
             )
             resp.raise_for_status()
-            for event in (resp.json() if isinstance(resp.json(), list) else resp.json().get("data", [])):
+            events = resp.json() if isinstance(resp.json(), list) else resp.json().get("data", [])
+            for event in events:
                 e_home = event.get("home_team", "")
                 e_away = event.get("away_team", "")
                 key = f"{e_home}|{e_away}"
-                for book in event.get("bookmakers", []):
+                for book in event.get("bookmakers", [])[:1]:
                     for market in book.get("markets", []):
                         if market["key"] == "h2h":
                             mls = {o["name"]: o["price"] for o in market["outcomes"]}
@@ -255,7 +310,15 @@ async def save_todays_picks(client: httpx.AsyncClient, today: str) -> int:
                                 "home_ml": mls.get(e_home),
                                 "away_ml": mls.get(e_away),
                             }
-                            break
+                        elif market["key"] == "totals":
+                            over  = next((o for o in market["outcomes"] if o["name"] == "Over"),  None)
+                            under = next((o for o in market["outcomes"] if o["name"] == "Under"), None)
+                            if over:
+                                ou_lookup[key] = {
+                                    "line":      over.get("point"),
+                                    "over_ml":   over.get("price"),
+                                    "under_ml":  under.get("price") if under else None,
+                                }
         except Exception as e:
             log.warning(f"Odds API fetch failed: {e}")
 
@@ -274,25 +337,33 @@ async def save_todays_picks(client: httpx.AsyncClient, today: str) -> int:
 
             h_stats = team_stats.get(h_abbrev, {})
             a_stats = team_stats.get(a_abbrev, {})
-
-            # Get playoff series state if available
             series_state = get_playoff_series_state(g)
+            game_date = g.get("startTimeUTC", today)[:10] or today
 
             model_h = model_home_prob(h_stats, a_stats, series_state)
             model_a = round(1 - model_h, 4)
 
-            # Get odds
+            hgp = max(h_stats.get("gamesPlayed", 1), 1)
+            agp = max(a_stats.get("gamesPlayed", 1), 1)
+
+            # Match odds by team place name substring
             home_ml = away_ml = None
+            ou_line = over_ml = under_ml = None
             for key, od in odds_lookup.items():
                 if h_place.lower() in key.lower() and a_place.lower() in key.lower():
                     home_ml = od.get("home_ml")
                     away_ml = od.get("away_ml")
                     break
+            for key, od in ou_lookup.items():
+                if h_place.lower() in key.lower() and a_place.lower() in key.lower():
+                    ou_line   = od.get("line")
+                    over_ml   = od.get("over_ml")
+                    under_ml  = od.get("under_ml")
+                    break
 
             implied_h = moneyline_to_prob(home_ml) if home_ml else None
-            implied_a = moneyline_to_prob(away_ml) if away_ml else None
 
-            # Determine edge
+            # ── H2H edge ──────────────────────────────────────────────────────
             edge_team = None
             edge_value = 0
             strong = False
@@ -306,6 +377,31 @@ async def save_todays_picks(client: httpx.AsyncClient, today: str) -> int:
                     edge_value = round(implied_h - model_h, 4)
                 strong = edge_value >= EDGE_STRONG
 
+            # ── O/U edge ──────────────────────────────────────────────────────
+            ou_edge_team = None
+            ou_edge_value = 0
+            ou_strong = False
+            ou_model_p = ou_implied_p = None
+
+            if ou_line is not None and over_ml is not None:
+                h_gf = h_stats.get("goalFor", 0) / hgp
+                a_gf = a_stats.get("goalFor", 0) / agp
+                expected_total = h_gf + a_gf
+                ou_model_p = model_over_prob(expected_total, ou_line)
+                raw_over  = moneyline_to_prob(int(over_ml))
+                raw_under = moneyline_to_prob(int(under_ml)) if under_ml else raw_over
+                vig_ou = raw_over + raw_under
+                ou_implied_p = round(raw_over / vig_ou, 4) if vig_ou else None
+                if ou_implied_p is not None:
+                    ou_diff = ou_model_p - ou_implied_p
+                    if abs(ou_diff) >= EDGE_FLAG:
+                        ou_edge_team  = "over" if ou_diff > 0 else "under"
+                        ou_edge_value = round(abs(ou_diff), 4)
+                        ou_strong     = ou_edge_value >= EDGE_STRONG
+
+            series_note = f" [{series_state}]" if series_state else ""
+
+            # ── Save H2H pick ─────────────────────────────────────────────────
             if edge_team:
                 conn.execute("""
                     INSERT OR IGNORE INTO edge_picks
@@ -314,15 +410,37 @@ async def save_todays_picks(client: httpx.AsyncClient, today: str) -> int:
                          home_ml, away_ml, start_utc)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
-                    g["id"], today, season_type, h_abbrev, a_abbrev, h_name, a_name,
+                    g["id"], game_date, season_type, h_abbrev, a_abbrev, h_name, a_name,
                     edge_team, edge_value, 1 if strong else 0,
                     model_h, implied_h, home_ml, away_ml,
                     g.get("startTimeUTC", ""),
                 ))
                 if conn.total_changes > saved:
                     tag = "STRONG " if strong else ""
-                    series_note = f" [{series_state}]" if series_state else ""
-                    log.info(f"  Saved {tag}EDGE: {a_name} @ {h_name} — {edge_team.upper()} +{edge_value*100:.1f}%{series_note}")
+                    log.info(f"  Saved {tag}H2H EDGE: {a_name} @ {h_name} — {edge_team.upper()} +{edge_value*100:.1f}%{series_note}")
+                    saved += 1
+
+            # ── Save O/U pick ─────────────────────────────────────────────────
+            # Stored with negative game_id so H2H and O/U picks for the same
+            # game can coexist without PRIMARY KEY conflicts.
+            if ou_edge_team:
+                ou_game_id = -(g["id"])
+                conn.execute("""
+                    INSERT OR IGNORE INTO edge_picks
+                        (game_id, date, season_type, home_abbrev, away_abbrev, home_name, away_name,
+                         edge_team, edge_value, strong_flag, model_prob, implied_prob,
+                         home_ml, away_ml, ou_line, start_utc)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    ou_game_id, game_date, season_type, h_abbrev, a_abbrev, h_name, a_name,
+                    ou_edge_team, ou_edge_value, 1 if ou_strong else 0,
+                    ou_model_p, ou_implied_p,
+                    over_ml, under_ml, ou_line,
+                    g.get("startTimeUTC", ""),
+                ))
+                if conn.total_changes > saved:
+                    tag = "STRONG " if ou_strong else ""
+                    log.info(f"  Saved {tag}O/U EDGE: {a_name} @ {h_name} — {ou_edge_team.upper()} (line {ou_line}) +{ou_edge_value*100:.1f}%{series_note}")
                     saved += 1
 
         conn.commit()
@@ -366,27 +484,47 @@ async def resolve_pending(client: httpx.AsyncClient, today: str) -> int:
                 gid     = sg.get("id")
                 h_score = sg.get("homeTeam", {}).get("score") or 0
                 a_score = sg.get("awayTeam", {}).get("score") or 0
-                if h_score == a_score:
-                    continue
+                total   = h_score + a_score
 
-                actual_winner = "home" if h_score > a_score else "away"
-                existing = conn.execute(
-                    "SELECT game_id, edge_team, home_name, away_name FROM edge_picks "
-                    "WHERE game_id = ? AND result = 'PENDING'", (gid,)
+                # ── Resolve H2H pick (positive game_id) ───────────────────────
+                if h_score != a_score:
+                    actual_winner = "home" if h_score > a_score else "away"
+                    existing = conn.execute(
+                        "SELECT game_id, edge_team, home_name, away_name FROM edge_picks "
+                        "WHERE game_id = ? AND result = 'PENDING'", (gid,)
+                    ).fetchone()
+                    if existing:
+                        result = "WIN" if existing["edge_team"] == actual_winner else "LOSS"
+                        conn.execute(
+                            "UPDATE edge_picks SET actual_winner = ?, result = ? WHERE game_id = ?",
+                            (actual_winner, result, gid)
+                        )
+                        log.info(
+                            f"  Resolved H2H [{result}]: {existing['away_name']} @ {existing['home_name']} "
+                            f"— picked {existing['edge_team'].upper()}, actual {actual_winner.upper()} "
+                            f"({a_score}-{h_score})"
+                        )
+                        resolved += 1
+
+                # ── Resolve O/U pick (negative game_id = -gid) ────────────────
+                ou_pick = conn.execute(
+                    "SELECT game_id, edge_team, home_name, away_name, ou_line FROM edge_picks "
+                    "WHERE game_id = ? AND result = 'PENDING'", (-gid,)
                 ).fetchone()
-
-                if existing:
-                    result = "WIN" if existing["edge_team"] == actual_winner else "LOSS"
+                if ou_pick and ou_pick["ou_line"] is not None:
+                    line = ou_pick["ou_line"]
+                    actual_ou = "over" if total > line else "under"
+                    result = "WIN" if ou_pick["edge_team"] == actual_ou else "LOSS"
                     conn.execute(
                         "UPDATE edge_picks SET actual_winner = ?, result = ? WHERE game_id = ?",
-                        (actual_winner, result, gid)
+                        (actual_ou, result, -gid)
                     )
                     log.info(
-                        f"  Resolved [{result}]: {existing['away_name']} @ {existing['home_name']} "
-                        f"— picked {existing['edge_team'].upper()}, actual {actual_winner.upper()} "
-                        f"({a_score}-{h_score})"
+                        f"  Resolved O/U [{result}]: {ou_pick['away_name']} @ {ou_pick['home_name']} "
+                        f"— picked {ou_pick['edge_team'].upper()} (line {line}), actual total {total}"
                     )
                     resolved += 1
+
             conn.commit()
 
     return resolved
