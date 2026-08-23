@@ -6,7 +6,7 @@ Guidance for Claude Code when working in this repository.
 
 A personal stock research dashboard. React frontend with a FastAPI backend that fetches OHLCV data and company info from yfinance.
 
-**Root:** `C:\Users\Jeremy\chartproject\`
+**Root:** `F:\Documents\MarketLens\`
 
 ## Structure
 
